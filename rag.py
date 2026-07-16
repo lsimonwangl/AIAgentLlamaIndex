@@ -1,13 +1,14 @@
 """
 Router RAG - 旅遊偏好檢索器
 ===========================
-rag.py 負責將 ./data 中的旅遊紀錄建立兩種索引，
+rag.py 負責將 ./data 中的旅遊紀錄建立三種索引，
 並透過 RouterQueryEngine 依問題類型自動選擇檢索方式。
 
-相較於 Lab2 只使用單一 VectorStoreIndex，Lab3 新增 SummaryIndex，
-讓系統能針對不同類型的問題選擇最適合的檢索策略：
+相較於 Lab2 只使用單一 VectorStoreIndex，Lab3 新增 SummaryIndex 與
+PropertyGraphIndex，讓系統能針對不同類型的問題選擇最適合的檢索策略：
     - SummaryIndex：掃過所有紀錄做摘要，適合歸納整體旅遊風格
     - VectorStoreIndex：向量相似度檢索，適合查詢特定體驗細節
+    - PropertyGraphIndex：知識圖譜檢索，適合按「旅伴情境」聚合偏好
 
 執行流程：
     0. 載入套件與環境變數
@@ -15,8 +16,9 @@ rag.py 負責將 ./data 中的旅遊紀錄建立兩種索引，
     2. 建立 LLM 實例（OpenAI-compatible）與 Embedding Model（NVIDIA）
     3. 建立 SummaryIndex（聚合型問題）
     4. 建立 VectorStoreIndex + Milvus（細節型問題）
-    5. 將兩個索引包成 QueryEngineTool，寫明各自適合的問題類型
-    6. 透過 RouterQueryEngine + LLMSingleSelector 自動選路
+    5. 建立 PropertyGraphIndex（旅伴情境偏好聚合）
+    6. 將三個索引包成 QueryEngineTool，寫明各自適合的問題類型
+    7. 透過 RouterQueryEngine + LLMSingleSelector 自動選路
 
 此模組提供 build_router_query_engine() 函式供 main.py 呼叫。
 """
@@ -24,14 +26,20 @@ rag.py 負責將 ./data 中的旅遊紀錄建立兩種索引，
 # 載入套件
 import logging
 import os
+import re
+from typing import Literal
 
 from llama_index.core import (
+    Document,
     PromptTemplate,
+    PropertyGraphIndex,
     SimpleDirectoryReader,
     StorageContext,
     SummaryIndex,
     VectorStoreIndex,
 )
+from llama_index.core.graph_stores import SimplePropertyGraphStore
+from llama_index.core.indices.property_graph import SchemaLLMPathExtractor
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.query_engine import RouterQueryEngine
 from llama_index.core.selectors import PydanticSingleSelector
@@ -41,6 +49,26 @@ from llama_index.llms.openai_like import OpenAILike
 from llama_index.vector_stores.milvus import MilvusVectorStore
 
 
+# ── PropertyGraphIndex 固定 schema ──
+# 旅伴欄位只在每份紀錄開頭、偏好細節散在後文，chunk 256 切分後兩者
+# 不在同一 chunk，向量檢索無法做「旅伴條件」的偏好聚合；
+# 因此用固定 schema 抽三元組，把 旅次-旅伴 與 旅次-景點/住宿/美食/評價
+# 串在同一張圖上，讓「和某類旅伴出遊」的偏好可以沿著圖聚合
+GRAPH_ENTITIES = Literal["旅次", "旅伴", "目的地", "景點", "住宿", "美食", "評價"]
+GRAPH_RELATIONS = Literal["同行", "造訪", "入住", "品嚐", "評價為"]
+GRAPH_VALIDATION_SCHEMA = [
+    ("旅次", "同行", "旅伴"),
+    ("旅次", "造訪", "目的地"),
+    ("旅次", "造訪", "景點"),
+    ("旅次", "入住", "住宿"),
+    ("旅次", "品嚐", "美食"),
+    ("目的地", "評價為", "評價"),
+    ("景點", "評價為", "評價"),
+    ("住宿", "評價為", "評價"),
+    ("美食", "評價為", "評價"),
+]
+
+
 def load_data_docs():
     """讀取 ./data 資料夾中的文字檔，轉成 LlamaIndex Document 物件列表。"""
     reader = SimpleDirectoryReader(
@@ -48,6 +76,32 @@ def load_data_docs():
         required_exts=[".txt"],
     )
     return reader.load_data()
+
+
+def split_docs_by_record(documents):
+    """把整份合集依「===== 標題 =====」切成一筆旅遊紀錄一個 Document（僅供建圖使用）。
+
+    旅伴欄位只在每份紀錄開頭，後段 chunk 抽三元組時看不到「這是哪一次旅次、
+    和誰同行」；把紀錄標題與旅伴放進 metadata，抽取時每個 chunk 都帶著
+    這兩項上下文，旅次節點命名才會一致、圖才接得起來。
+    """
+    records = []
+    for doc in documents:
+        parts = re.split(r"^=====\s*(.+?)\s*=====\s*$", doc.text, flags=re.MULTILINE)
+        # re.split 結果為 [前導, 標題1, 內文1, 標題2, 內文2, ...]
+        for title, body in zip(parts[1::2], parts[2::2]):
+            companion = re.search(r"同行人數：(.+)", body)
+            records.append(
+                Document(
+                    text=body.strip(),
+                    metadata={
+                        "旅遊紀錄": title,
+                        "同行旅伴": companion.group(1).strip() if companion else "未知",
+                    },
+                )
+            )
+    # ponytail: 語料若無 ===== 標題就退回原始 Document，不擋建圖
+    return records or documents
 
 
 def build_router_query_engine():
@@ -97,6 +151,27 @@ def build_router_query_engine():
         transformations=[splitter],      # 建索引前先用 SentenceSplitter 切 chunk
         embed_model=embed_model,         # 用來把 chunk 轉成向量的模型
     )
+
+    # ── 建立 PropertyGraphIndex：適合旅伴情境的偏好聚合 ──
+    # 用同一顆 LLM 依固定 schema 抽三元組，圖存進內建 SimplePropertyGraphStore
+    print("🕸️ 建立 PropertyGraphIndex（LLM 逐 chunk 抽取三元組，速度較慢，請稍候）...")
+    kg_extractor = SchemaLLMPathExtractor(
+        llm=llm,                                       # 與其他索引共用同一顆 LLM
+        possible_entities=GRAPH_ENTITIES,              # 實體類型限定為固定 schema
+        possible_relations=GRAPH_RELATIONS,            # 關係類型限定為固定 schema
+        kg_validation_schema=GRAPH_VALIDATION_SCHEMA,  # 只允許 schema 內的三元組組合
+        strict=True,                                   # 不符合 schema 的抽取結果直接丟棄
+    )
+    graph_index = PropertyGraphIndex.from_documents(
+        split_docs_by_record(documents),               # 一筆紀錄一個 Document，metadata 帶旅次與旅伴
+        llm=llm,                                       # 圖譜檢索（同義詞擴展）用的 LLM
+        embed_model=embed_model,                       # 圖節點嵌入用的 embedding model
+        kg_extractors=[kg_extractor],                  # 用上面的固定 schema 抽取器建圖
+        property_graph_store=SimplePropertyGraphStore(),  # 內建記憶體圖存放區，不需外部服務
+        transformations=[splitter],                    # 與其他索引相同的切分設定
+        show_progress=True,                            # 顯示抽取與嵌入進度條（建圖較慢）
+    )
+    print("🕸️ PropertyGraphIndex 建立完成")
 
     # ── 自訂 QA prompt：把 RAG 從「直接回答問題」改為「整理過往台灣經驗作為素材」 ──
     # 這樣即使使用者問海外目的地（例：京都有溪谷步道嗎），RAG 不會回「無京都資料」，
@@ -152,14 +227,33 @@ def build_router_query_engine():
         ),
     )
 
+    # ── graph_tool：把 PropertyGraphIndex 包成 QueryEngineTool，寫明適合的問題類型 ──
+    graph_tool = QueryEngineTool.from_defaults(
+        query_engine=graph_index.as_query_engine(
+            llm=llm,                            # 用前面建立的 NVIDIA NIM LLM
+            include_text=True,                  # 命中三元組後帶回原文 chunk 供整理
+            path_depth=2,                       # 沿圖走兩步：旅伴→旅次→景點/住宿/美食
+            similarity_top_k=8,                 # 錨點節點取 8 個，聚合型問題需要較廣的起點
+            text_qa_template=organize_qa_tmpl,   # 套用同一份「整理式」prompt
+        ),
+        # 與另外兩個工具明確區隔：這裡只負責「和某類旅伴出遊」的情境偏好聚合
+        description=(
+            "適合回答「和某類旅伴出遊時」的情境偏好聚合問題，"
+            "依旅伴（獨旅一個人、和朋友、和女友）分組歸納各自的"
+            "景點類型、住宿、美食與步調偏好。"
+            "例如：照我過去獨旅的偏好規劃行程、和朋友出遊時我喜歡住哪類住宿。"
+        ),
+    )
+
     # ── RouterQueryEngine：LLM 讀取問題與 description 後自動選路 ──
-    # selector 會把使用者問題連同上面兩個工具的 description 一起交給 LLM，
+    # selector 會把使用者問題連同上面三個工具的 description 一起交給 LLM，
     # description 是 LLM 選路時唯一讀到的判斷依據：
     #   總覽型問題 → summary_tool（SummaryIndex，綜觀全部紀錄做摘要）
     #   檢索型問題 → vector_tool（VectorStoreIndex，top-k 相似檢索）
+    #   旅伴情境偏好 → graph_tool（PropertyGraphIndex，沿圖聚合偏好）
     router_engine = RouterQueryEngine(
         selector=PydanticSingleSelector.from_defaults(llm=llm),  # 選路用的 LLM：讀問題與 description，一次選出一個 tool
-        query_engine_tools=[summary_tool, vector_tool],          # 可選的工具清單
+        query_engine_tools=[summary_tool, vector_tool, graph_tool],  # 可選的工具清單
         llm=llm,                                                 # 合成用的 LLM：把選中 tool 檢索出的結果整理成最終回應
         verbose=False,                                           # 關掉內建選路 print，改由 chat.py 統一輸出一行
     )
@@ -169,5 +263,5 @@ def build_router_query_engine():
         logging.WARNING
     )
 
-    print("✅ RouterQueryEngine 建立完成（SummaryIndex + VectorStoreIndex）")
+    print("✅ RouterQueryEngine 建立完成（SummaryIndex + VectorStoreIndex + PropertyGraphIndex）")
     return router_engine
