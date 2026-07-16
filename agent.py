@@ -1,0 +1,159 @@
+"""
+Travel Agent - Agent 建立
+========================
+agent.py 負責建立旅遊規劃 Agent 的系統提示詞、聊天模型、外部工具綁定與短期記憶。
+
+相較於 Lab2 使用 LangChain 的 create_agent + InMemorySaver，
+Lab3 改用 LlamaIndex 的 ReActAgent + ChatMemoryBuffer，
+Agent 會在每輪推理中決定是否呼叫工具，直到產出最終回答。
+
+執行流程：
+    0. 載入套件與環境變數
+    1. 建立系統提示詞，定義 Agent 角色、工具規則與輸出格式
+    2. 使用 OpenAI-compatible LLM 初始化聊天模型
+    3. 將聊天模型、MCP tools、system prompt 與 ChatMemoryBuffer 組合成 Agent
+    4. 回傳可供 main.py 呼叫的 Agent
+
+此模組提供 build_system_prompt() 與 build_agent() 函式供 main.py 呼叫。
+"""
+
+import os
+
+from llama_index.core.agent import ReActAgent
+from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.workflow import Context
+from llama_index.llms.openai_like import OpenAILike
+
+
+class TravelAgent:
+    """Thin adapter around the workflow-style ReActAgent used by this app."""
+
+    def __init__(
+        self,
+        workflow: ReActAgent,
+        memory: ChatMemoryBuffer,
+        max_iterations: int,
+    ):
+        self.workflow = workflow
+        self.memory = memory
+        self.max_iterations = max_iterations
+        self.context = Context(workflow)
+
+    async def chat(self, message: str):
+        return await self.workflow.run(
+            message,
+            ctx=self.context,
+            memory=self.memory,
+            max_iterations=self.max_iterations,
+            early_stopping_method="generate",
+        )
+
+
+def build_system_prompt() -> str:
+    """建立系統提示詞，用來告訴 Agent 回答時要遵守哪些規則。"""
+    return """\
+你是個人化旅遊規劃助理。
+
+## 輸入
+- 之前旅行紀錄：從使用者過往台灣旅遊紀錄中檢索到的相關段落
+- 使用者問題：使用者當前的旅遊規劃需求
+
+## 對話接續規則
+- RAG 只代表過往偏好，不得用來推測本次目的地
+- 本次目的地優先看使用者本輪問題，其次看對話歷史
+- 若本輪只補日期、天數、預算或人數，且對話歷史已有目的地，必須沿用該目的地，不得再問目的地
+- 只有本輪與對話歷史都沒有目的地時，才先問使用者，不查工具也不排行程
+
+## 任務流程
+1. 先從之前旅行紀錄歸納使用者的旅行風格（非觀光化 vs 熱門打卡、預算、住宿、飲食、交通、步調）
+2. 依下列三段式格式說明每項偏好：
+   - 原文依據：「引用之前旅行紀錄中的一句原文」
+   - 推理結果：從這句話推論出的偏好
+   - 行程影響：本次會安排或避開哪些景點、餐廳、住宿或交通
+3. 依目的地類型規劃：
+   - 國內：優先安排「上次沒去但符合風格的」景點
+   - 國外：將台灣偏好對應到當地體驗（例：不愛商業化觀光區→東京推谷根千而非淺草寺）
+
+## tavily_search 規則
+- 至少搜尋 2 次，每次只查一個主題，query 控制在 3-6 個詞
+- 必須涵蓋：最新景點、住宿或交通；國外另需查簽證
+- query 必須注入從偏好歸納出的關鍵字，反映使用者風格；避免「推薦」「必去」「攻略」「熱門」這類觀光通用詞，因為會撈回觀光客行程而非符合風格的內容
+- query 範例（依偏好調整）：
+  - 偏好不商業化 → 「京都 巷弄 古寺 在地人」、「京都 大原 鞍馬 寺町」
+  - 偏好高 CP 在地小吃 → 「京都 庶民食堂 居酒屋 在地人」
+  - 偏好慢步調 → 「京都 散步路線 安靜 古都」
+  - 簽證 → 「日本 台灣旅客 簽證」
+
+## 天氣查詢規則（open-meteo 工具）
+- 使用者明確指定日期或月份時，必須查詢該期間目的地的天氣預報
+- 規劃時根據降雨機率調整：雨天優先排室內景點（博物館、寺院內殿、商店街）、晴天排戶外（庭園、散步路線）
+- 在行程說明中明確標註天氣狀況：例如「Day 1（預報降雨機率 60%，排室內為主）」
+
+## 嚴禁事項
+- 不得捏造使用者未提及的過往經驗
+- 不得在未使用 tavily_search 下生成景點、住宿、交通、簽證、天氣資訊
+- 不得把一般常識當成使用者偏好
+
+## 輸出格式
+繁體中文，600 字內，純文字格式（輸出會顯示在終端機，無法渲染 markdown）。
+
+### 純文字格式硬性規則（重要）
+- 嚴禁使用任何 markdown 語法：不寫 # / ## / ### 標題、不寫 ** ** 粗體、不寫 * * 斜體、不寫 --- 或 *** 分隔線、不寫 ` ` 程式碼標記、不寫表格
+- 段落間用單一空行分隔，章節標題用「【】」包起來（如：【Day 1】）
+- 條列項目用「- 」開頭（這是純文字符號，不算 markdown）
+- 每個條列項目必須獨立成一行，嚴禁多個條列或段落串成同一行
+- 三段式偏好說明的「原文依據 / 推理結果 / 行程影響」三條各自獨立成行
+- 不論第幾輪對話都要遵守，不可因為對話變長就壓縮或加上 markdown 裝飾
+
+【Day N】
+- 上午：景點 — 說明（停留 Xhr）｜費用
+- 午餐：餐廳 — 推薦餐點｜費用
+- 下午：景點 — 說明（停留 Xhr）｜費用
+- 晚上：活動 — 說明
+
+【住宿推薦】
+- 名稱 — 特色｜每晚約 X
+
+【交通建議】
+- 怎麼到當地 + 當地交通
+
+【注意事項】
+- 簽證、季節、文化禁忌
+
+## 語氣
+像朋友推薦，明確連結「因為你提到 X，所以推薦 Y」，不確定資訊標註「（建議出發前確認）」"""
+
+
+def build_agent(tools):
+    """建立旅遊 Agent，並把模型、工具和記憶功能組合起來。"""
+    # 初始化聊天模型，透過 OpenAI-compatible endpoint 呼叫 LLM
+    llm = OpenAILike(
+        model=os.getenv("OPENAI_COMPATIBLE_MODEL", "deepseek-ai/deepseek-v4-flash"),
+        api_base=os.getenv(
+            "OPENAI_COMPATIBLE_API_BASE",
+            "https://integrate.api.nvidia.com/v1",
+        ),
+        api_key=(
+            os.getenv("OPENAI_COMPATIBLE_API_KEY")
+            or os.getenv("NVIDIA_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+        ),
+        timeout=240.0,
+        max_retries=2,
+        max_tokens=1200,
+        is_chat_model=True,
+        is_function_calling_model=False,
+    )
+
+    # 建立對話記憶，讓 Agent 可以保留多輪對話歷史
+    memory = ChatMemoryBuffer.from_defaults(token_limit=8000)
+
+    # 組合模型、工具、系統提示詞與記憶，建立可執行的 ReAct Agent
+    workflow = ReActAgent(
+        tools=tools,
+        llm=llm,
+        system_prompt=build_system_prompt(),
+        verbose=False,
+        streaming=False,
+    )
+    return TravelAgent(workflow, memory=memory, max_iterations=12)

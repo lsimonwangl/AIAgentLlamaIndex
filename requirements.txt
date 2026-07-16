@@ -1,0 +1,9 @@
+python-dotenv
+llama-index-core
+llama-index-llms-openai-like
+llama-index-llms-nvidia
+llama-index-embeddings-nvidia
+llama-index-readers-file
+llama-index-tools-mcp
+llama-index-vector-stores-milvus
+pymilvus >= 2.5, <2.6
