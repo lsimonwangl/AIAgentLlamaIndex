@@ -1,52 +1,27 @@
 """
 Travel Agent - Agent 建立
 ========================
-agent.py 負責建立旅遊規劃 Agent 的系統提示詞、聊天模型、外部工具綁定與短期記憶。
+agent.py 負責建立旅遊規劃 Agent 的系統提示詞、聊天模型與外部工具綁定。
 
-相較於 Lab2 使用 LangChain 的 create_agent + InMemorySaver，
-Lab3 改用 LlamaIndex 的 ReActAgent + ChatMemoryBuffer，
-Agent 會在每輪推理中決定是否呼叫工具，直到產出最終回答。
+相較於 Lab2 使用 LangChain 的 create_agent + ChatOpenAI + InMemorySaver，
+Lab3 改用 LlamaIndex 的 FunctionAgent + OpenAI（OpenAI-compatible 端點），
+多輪記憶由 Context 物件維持（在 chat.py 中建立）。
 
 執行流程：
     0. 載入套件與環境變數
     1. 建立系統提示詞，定義 Agent 角色、工具規則與輸出格式
-    2. 使用 OpenAI-compatible LLM 初始化聊天模型
-    3. 將聊天模型、MCP tools、system prompt 與 ChatMemoryBuffer 組合成 Agent
+    2. 使用 OpenAI-compatible 端點初始化聊天模型（指向 NVIDIA NIM）
+    3. 將聊天模型、MCP tools 與 system prompt 組合成 FunctionAgent
     4. 回傳可供 main.py 呼叫的 Agent
 
 此模組提供 build_system_prompt() 與 build_agent() 函式供 main.py 呼叫。
 """
 
+# 載入套件
 import os
 
-from llama_index.core.agent import ReActAgent
-from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.workflow import Context
+from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.llms.openai_like import OpenAILike
-
-
-class TravelAgent:
-    """Thin adapter around the workflow-style ReActAgent used by this app."""
-
-    def __init__(
-        self,
-        workflow: ReActAgent,
-        memory: ChatMemoryBuffer,
-        max_iterations: int,
-    ):
-        self.workflow = workflow
-        self.memory = memory
-        self.max_iterations = max_iterations
-        self.context = Context(workflow)
-
-    async def chat(self, message: str):
-        return await self.workflow.run(
-            message,
-            ctx=self.context,
-            memory=self.memory,
-            max_iterations=self.max_iterations,
-            early_stopping_method="generate",
-        )
 
 
 def build_system_prompt() -> str:
@@ -75,6 +50,7 @@ def build_system_prompt() -> str:
    - 國外：將台灣偏好對應到當地體驗（例：不愛商業化觀光區→東京推谷根千而非淺草寺）
 
 ## tavily_search 規則
+- 呼叫時務必帶入參數：max_results=3、search_depth="basic"、include_raw_content=false，避免回傳過量內容拖慢回應
 - 至少搜尋 2 次，每次只查一個主題，query 控制在 3-6 個詞
 - 必須涵蓋：最新景點、住宿或交通；國外另需查簽證
 - query 必須注入從偏好歸納出的關鍵字，反映使用者風格；避免「推薦」「必去」「攻略」「熱門」這類觀光通用詞，因為會撈回觀光客行程而非符合風格的內容
@@ -125,35 +101,25 @@ def build_system_prompt() -> str:
 
 
 def build_agent(tools):
-    """建立旅遊 Agent，並把模型、工具和記憶功能組合起來。"""
-    # 初始化聊天模型，透過 OpenAI-compatible endpoint 呼叫 LLM
+    """建立旅遊 Agent，並把模型、工具和系統提示詞組合起來。"""
+    # 初始化聊天模型，透過 OpenAI-compatible 端點呼叫 NVIDIA NIM
     llm = OpenAILike(
-        model=os.getenv("OPENAI_COMPATIBLE_MODEL", "deepseek-ai/deepseek-v4-flash"),
-        api_base=os.getenv(
-            "OPENAI_COMPATIBLE_API_BASE",
-            "https://integrate.api.nvidia.com/v1",
-        ),
-        api_key=(
-            os.getenv("OPENAI_COMPATIBLE_API_KEY")
-            or os.getenv("NVIDIA_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-        ),
-        timeout=240.0,
-        max_retries=2,
-        max_tokens=1200,
-        is_chat_model=True,
-        is_function_calling_model=False,
+        api_base="https://integrate.api.nvidia.com/v1",  # NVIDIA NIM 的 OpenAI 相容端點
+        api_key=os.getenv("NVIDIA_API_KEY"),             # 從環境變數讀取 API 金鑰
+        model=os.getenv("CHAT_MODEL"),                   # 指定使用的 chat 模型名稱
+        is_chat_model=True,                              # 使用 chat completion 介面
+        is_function_calling_model=True,                  # 宣告模型支援 function calling，FunctionAgent 才能呼叫工具
+        context_window=128000,                           # 模型最大可吃的 token 數
+        timeout=300.0,                                   # 單次請求逾時秒數（模型較慢，放寬避免中途中斷）
     )
 
-    # 建立對話記憶，讓 Agent 可以保留多輪對話歷史
-    memory = ChatMemoryBuffer.from_defaults(token_limit=8000)
-
-    # 組合模型、工具、系統提示詞與記憶，建立可執行的 ReAct Agent
-    workflow = ReActAgent(
+    # 組合模型、工具與系統提示詞，建立 FunctionAgent
+    # FunctionAgent 透過 LLM 的 function calling 能力自主決定要呼叫哪個工具、帶什麼參數，
+    # 並在「思考 → 呼叫工具 → 讀結果 → 再思考」的迴圈中反覆執行，直到產生最終回答；
+    # 工具呼叫出錯時會自動把錯誤訊息回饋給 LLM 重試，不會中斷整個流程。
+    # 多輪對話記憶由 Context 物件維持（在 chat.py 中建立）
+    return FunctionAgent(
         tools=tools,
         llm=llm,
         system_prompt=build_system_prompt(),
-        verbose=False,
-        streaming=False,
     )
-    return TravelAgent(workflow, memory=memory, max_iterations=12)

@@ -1,7 +1,7 @@
 python-dotenv
 llama-index-core
+llama-index-llms-openai
 llama-index-llms-openai-like
-llama-index-llms-nvidia
 llama-index-embeddings-nvidia
 llama-index-readers-file
 llama-index-tools-mcp
