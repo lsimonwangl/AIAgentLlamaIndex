@@ -138,9 +138,16 @@ def build_graph_index(documents, splitter, llm, embed_model):
             embed_model=embed_model,
         )
 
-    print("🕸️ 建立 PropertyGraphIndex（LLM 逐 chunk 抽取三元組，速度較慢，請稍候）...")
+    # 建圖抽取可用 GRAPH_CHAT_MODEL 指定獨立模型（如 moonshotai/kimi-k2.6），
+    # 與主 LLM 的 worker 配額隔離，建圖不會跟選路/合成/Agent 搶額度；
+    # 未設定則沿用 CHAT_MODEL。抽取靠 function calling，指定的模型必須支援 tools
+    kg_llm_updates = {"max_retries": GRAPH_EXTRACT_MAX_RETRIES}
+    if os.getenv("GRAPH_CHAT_MODEL"):
+        kg_llm_updates["model"] = os.getenv("GRAPH_CHAT_MODEL")
+
+    print(f"🕸️ 建立 PropertyGraphIndex（{kg_llm_updates.get('model', llm.model)} 逐 chunk 抽取三元組，速度較慢，請稍候）...")
     kg_extractor = SchemaLLMPathExtractor(
-        llm=llm.model_copy(update={"max_retries": GRAPH_EXTRACT_MAX_RETRIES}),
+        llm=llm.model_copy(update=kg_llm_updates),
         possible_entities=GRAPH_ENTITIES,
         possible_relations=GRAPH_RELATIONS,
         kg_validation_schema=GRAPH_VALIDATION_SCHEMA,
