@@ -120,7 +120,9 @@ def build_router_query_engine():
 
     summary_index = rag_indexes.build_summary_index(documents, splitter)
     vector_index = rag_indexes.build_vector_index(documents, splitter, embed_model, vector_store)
-    graph_index = rag_indexes.build_graph_index(documents, splitter, llm, embed_model)
+    graph_index = rag_indexes.build_graph_index(
+        documents, splitter, llm, embed_model, rag_clients.build_graph_llm()
+    )
 
     tools = _build_tools(summary_index, vector_index, graph_index, llm)
 

@@ -43,7 +43,6 @@ CHUNK_OVERLAP = 50
 # 建圖成本高（逐 chunk LLM 抽取），建好後持久化到此資料夾；
 # ponytail: 語料（./data）變更時請手動刪除此資料夾觸發重建
 GRAPH_PERSIST_DIR = "./storage_graph"
-GRAPH_EXTRACT_MAX_RETRIES = 8  # NVIDIA endpoint 對請求量敏感（503），加大重試次數靠指數退避慢慢送完
 
 GRAPH_ENTITIES = Literal["旅次", "旅伴", "目的地", "景點", "住宿", "美食", "評價"]
 GRAPH_RELATIONS = Literal["同行", "造訪", "入住", "品嚐", "評價為"]
@@ -115,8 +114,12 @@ def build_vector_index(documents, splitter, embed_model, vector_store):
     )
 
 
-def build_graph_index(documents, splitter, llm, embed_model):
-    """建立或載入 PropertyGraphIndex：沿圖聚合「旅伴情境」偏好，建圖成本高故持久化到 GRAPH_PERSIST_DIR。"""
+def build_graph_index(documents, splitter, llm, embed_model, extract_llm):
+    """建立或載入 PropertyGraphIndex：沿圖聚合「旅伴情境」偏好，建圖成本高故持久化到 GRAPH_PERSIST_DIR。
+
+    llm 供圖譜檢索（同義詞擴展）使用；extract_llm 專供建圖抽取，
+    由 rag_clients.build_graph_llm() 建立（含請求節流與重試設定）。
+    """
     if os.path.exists(GRAPH_PERSIST_DIR):
         print(f"🕸️ 載入既有 PropertyGraphIndex（{GRAPH_PERSIST_DIR}；語料變更請刪除此資料夾重建）")
         return load_index_from_storage(
@@ -125,16 +128,9 @@ def build_graph_index(documents, splitter, llm, embed_model):
             embed_model=embed_model,
         )
 
-    # 建圖抽取可用 GRAPH_CHAT_MODEL 指定獨立模型（如 moonshotai/kimi-k2.6），
-    # 與主 LLM 的 worker 配額隔離，建圖不會跟選路/合成/Agent 搶額度；
-    # 未設定則沿用 CHAT_MODEL。抽取靠 function calling，指定的模型必須支援 tools
-    kg_llm_updates = {"max_retries": GRAPH_EXTRACT_MAX_RETRIES}
-    if os.getenv("GRAPH_CHAT_MODEL"):
-        kg_llm_updates["model"] = os.getenv("GRAPH_CHAT_MODEL")
-
-    print(f"🕸️ 建立 PropertyGraphIndex（{kg_llm_updates.get('model', llm.model)} 逐 chunk 抽取三元組，速度較慢，請稍候）...")
+    print(f"🕸️ 建立 PropertyGraphIndex（{extract_llm.model} 逐 chunk 抽取三元組，速度較慢，請稍候）...")
     kg_extractor = SchemaLLMPathExtractor(
-        llm=llm.model_copy(update=kg_llm_updates),
+        llm=extract_llm,
         possible_entities=GRAPH_ENTITIES,
         possible_relations=GRAPH_RELATIONS,
         kg_validation_schema=GRAPH_VALIDATION_SCHEMA,
