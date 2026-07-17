@@ -11,11 +11,8 @@ rag_indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立三種索引：
 rag_clients.py 建立後傳入，本檔案不處理連線設定。
 """
 
-import asyncio
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
-from typing import Literal
 
 from llama_index.core import (
     Document,
@@ -24,39 +21,21 @@ from llama_index.core import (
     StorageContext,
     SummaryIndex,
     VectorStoreIndex,
-    load_index_from_storage,
 )
 from llama_index.core.graph_stores import SimplePropertyGraphStore
-from llama_index.core.indices.property_graph import SchemaLLMPathExtractor
+from llama_index.core.graph_stores.types import (
+    KG_NODES_KEY,
+    KG_RELATIONS_KEY,
+    EntityNode,
+    Relation,
+)
 from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.schema import TransformComponent
 
 
 # ── 切分設定 ──
 CHUNK_SIZE = 256
 CHUNK_OVERLAP = 50
-
-# ── PropertyGraphIndex 固定 schema ──
-# 旅伴欄位只在每份紀錄開頭、偏好細節散在後文，chunk 256 切分後兩者
-# 不在同一 chunk，向量檢索無法做「旅伴條件」的偏好聚合；
-# 因此用固定 schema 抽三元組，把 旅次-旅伴 與 旅次-景點/住宿/美食/評價
-# 串在同一張圖上，讓「和某類旅伴出遊」的偏好可以沿著圖聚合
-# 建圖成本高（逐 chunk LLM 抽取），建好後持久化到此資料夾；
-# ponytail: 語料（./data）變更時請手動刪除此資料夾觸發重建
-GRAPH_PERSIST_DIR = "./storage_graph"
-
-GRAPH_ENTITIES = Literal["旅次", "旅伴", "目的地", "景點", "住宿", "美食", "評價"]
-GRAPH_RELATIONS = Literal["同行", "造訪", "入住", "品嚐", "評價為"]
-GRAPH_VALIDATION_SCHEMA = [
-    ("旅次", "同行", "旅伴"),
-    ("旅次", "造訪", "目的地"),
-    ("旅次", "造訪", "景點"),
-    ("旅次", "入住", "住宿"),
-    ("旅次", "品嚐", "美食"),
-    ("目的地", "評價為", "評價"),
-    ("景點", "評價為", "評價"),
-    ("住宿", "評價為", "評價"),
-    ("美食", "評價為", "評價"),
-]
 
 
 def load_data_docs():
@@ -114,56 +93,49 @@ def build_vector_index(documents, splitter, embed_model, vector_store):
     )
 
 
-def build_graph_index(documents, splitter, llm, embed_model, extract_llm):
-    """建立或載入 PropertyGraphIndex：沿圖聚合「旅伴情境」偏好，建圖成本高故持久化到 GRAPH_PERSIST_DIR。
+class RecordPathExtractor(TransformComponent):
+    """規則抽取器：從 metadata 直接產生三元組，不呼叫 LLM。
 
-    llm 供圖譜檢索（同義詞擴展）使用；extract_llm 專供建圖抽取，
-    由 rag_clients.build_graph_llm() 建立（含請求節流與重試設定）。
+    語料是半結構化的：旅伴寫在「同行人數：」固定欄位、旅次名是檔名、
+    目的地是檔名中段，build_graph_docs() 已把旅次與旅伴放進每個 chunk
+    的 metadata，這裡照規則建 (旅次)-[同行]->(旅伴) 與 (旅次)-[造訪]->(目的地)。
+    每個 chunk 都掛在自己的旅次節點下，查詢時沿 旅伴→旅次 把原文 chunk
+    帶回來整理——細節（景點/住宿/美食）由原文提供，不需要細粒度三元組。
     """
-    if os.path.exists(GRAPH_PERSIST_DIR):
-        print(f"🕸️ 載入既有 PropertyGraphIndex（{GRAPH_PERSIST_DIR}；語料變更請刪除此資料夾重建）")
-        return load_index_from_storage(
-            StorageContext.from_defaults(persist_dir=GRAPH_PERSIST_DIR),
-            llm=llm,
-            embed_model=embed_model,
-        )
 
-    print(f"🕸️ 建立 PropertyGraphIndex（{extract_llm.model} 逐 chunk 抽取三元組，速度較慢，請稍候）...")
-    kg_extractor = SchemaLLMPathExtractor(
-        llm=extract_llm,
-        possible_entities=GRAPH_ENTITIES,
-        possible_relations=GRAPH_RELATIONS,
-        kg_validation_schema=GRAPH_VALIDATION_SCHEMA,
-        strict=True,     # 不符合 schema 的抽取結果直接丟棄
-        num_workers=1,   # 逐一送出：併發重試風暴反而會撐爆 endpoint 的請求計數
+    def __call__(self, nodes, **kwargs):
+        for node in nodes:
+            trip = EntityNode(name=node.metadata.get("旅遊紀錄", "未知旅次"), label="旅次")
+            mate = EntityNode(name=node.metadata.get("同行旅伴", "未知"), label="旅伴")
+            kg_nodes = [trip, mate]
+            relations = [Relation(source_id=trip.id, target_id=mate.id, label="同行")]
+
+            # 檔名格式「編號_目的地_年月」，取中段當目的地節點
+            parts = trip.name.split("_")
+            if len(parts) >= 2:
+                dest = EntityNode(name=parts[1], label="目的地")
+                kg_nodes.append(dest)
+                relations.append(Relation(source_id=trip.id, target_id=dest.id, label="造訪"))
+
+            node.metadata[KG_NODES_KEY] = kg_nodes
+            node.metadata[KG_RELATIONS_KEY] = relations
+        return nodes
+
+
+def build_graph_index(documents, splitter, llm, embed_model):
+    """建立 PropertyGraphIndex：沿 旅伴→旅次 聚合「旅伴情境」偏好。
+
+    規則抽取不需 LLM，建圖只花節點嵌入的幾秒鐘，每次啟動重建、
+    永遠與 ./data 同步；llm 供查詢時的同義詞擴展使用。
+    """
+    print("🕸️ 建立 PropertyGraphIndex（規則抽取，不需 LLM）...")
+    return PropertyGraphIndex.from_documents(
+        build_graph_docs(documents),                      # 每筆紀錄的 metadata 帶旅次與旅伴
+        llm=llm,
+        embed_model=embed_model,
+        kg_extractors=[RecordPathExtractor()],
+        property_graph_store=SimplePropertyGraphStore(),  # 內建記憶體圖存放區，不需外部服務
+        transformations=[splitter],
+        use_async=False,  # 全同步：避免在 main.py 的 event loop 內巢狀 asyncio.run()
+        show_progress=True,
     )
-
-    def _extract():
-        return PropertyGraphIndex.from_documents(
-            build_graph_docs(documents),                      # 每筆紀錄的 metadata 帶旅次與旅伴
-            llm=llm,
-            embed_model=embed_model,
-            kg_extractors=[kg_extractor],
-            property_graph_store=SimplePropertyGraphStore(),  # 內建記憶體圖存放區，不需外部服務
-            transformations=[splitter],
-            show_progress=True,
-        )
-
-    # 建圖內部會呼叫 asyncio.run()，但 main.py 以 asyncio.run(main()) 進入時
-    # event loop 已在跑、不允許巢狀呼叫；丟到獨立 thread 讓它有自己的 loop
-    # （不用 nest_asyncio：它在 Python 3.14 會打壞 anyio，MCP 工具會載入失敗）
-    try:
-        asyncio.get_running_loop()
-        in_running_loop = True
-    except RuntimeError:
-        in_running_loop = False
-
-    if in_running_loop:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            graph_index = pool.submit(_extract).result()
-    else:
-        graph_index = _extract()
-
-    graph_index.storage_context.persist(persist_dir=GRAPH_PERSIST_DIR)
-    print(f"🕸️ PropertyGraphIndex 建立完成，已存至 {GRAPH_PERSIST_DIR}")
-    return graph_index

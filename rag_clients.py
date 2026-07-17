@@ -11,7 +11,6 @@ rag_clients.py 集中管理需要對外連線的 client 物件：
 的 client 物件使用，不需要知道連線細節。
 """
 
-import asyncio
 import os
 
 from llama_index.embeddings.nvidia import NVIDIAEmbedding
@@ -22,10 +21,6 @@ from llama_index.vector_stores.milvus import MilvusVectorStore
 LLM_API_BASE = "https://integrate.api.nvidia.com/v1"  # NVIDIA NIM 的 OpenAI 相容端點
 LLM_CONTEXT_WINDOW = 128000
 LLM_TIMEOUT = 300.0
-
-# ── 建圖抽取 LLM 設定 ──
-GRAPH_EXTRACT_MAX_RETRIES = 8      # 免費端點對請求量敏感，加大重試靠指數退避慢慢送完
-GRAPH_THROTTLE_SECONDS = 3.0       # 請求間隔：免費端點有每分鐘請求數上限，連發會 429
 
 # ── Milvus 連線設定 ──
 MILVUS_URI = "http://localhost:19530"
@@ -43,33 +38,6 @@ def build_llm():
         is_function_calling_model=True,
         context_window=LLM_CONTEXT_WINDOW,
         timeout=LLM_TIMEOUT,
-    )
-
-
-class ThrottledOpenAILike(OpenAILike):
-    """每次請求前固定等待，避免建圖的連續抽取請求打到免費端點的每分鐘上限（429）。"""
-
-    async def achat(self, messages, **kwargs):
-        await asyncio.sleep(GRAPH_THROTTLE_SECONDS)
-        return await super().achat(messages, **kwargs)
-
-
-def build_graph_llm():
-    """建立建圖抽取用的 LLM。
-
-    可用 GRAPH_CHAT_MODEL 指定與主 LLM 不同的模型（worker 配額隔離，
-    建圖不會跟選路/合成/Agent 搶額度），未設定則沿用 CHAT_MODEL；
-    指定的模型必須支援 function calling（抽取走結構化 tool call）。
-    """
-    return ThrottledOpenAILike(
-        api_base=LLM_API_BASE,
-        api_key=os.getenv("NVIDIA_API_KEY"),
-        model=os.getenv("GRAPH_CHAT_MODEL") or os.getenv("CHAT_MODEL"),
-        is_chat_model=True,
-        is_function_calling_model=True,
-        context_window=LLM_CONTEXT_WINDOW,
-        timeout=LLM_TIMEOUT,
-        max_retries=GRAPH_EXTRACT_MAX_RETRIES,
     )
 
 
