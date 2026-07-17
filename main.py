@@ -11,7 +11,7 @@ Lab3 直接將 RouterQueryEngine 與 Agent 傳入 CLI 介面，
 執行流程：
     0. 載入套件與環境變數
     1. 載入 Agent 可以使用的 MCP 外部工具
-    2. 建立 RouterQueryEngine（SummaryIndex + VectorStoreIndex）
+    2. 建立 RouterQueryEngine（SummaryIndex + VectorStoreIndex + PropertyGraphIndex）
     3. 建立負責回答問題的旅遊 Agent
     4. 啟動終端機互動介面，接收使用者多輪問題
 
@@ -33,7 +33,7 @@ async def main():
     # 載入外部工具，例如網路搜尋與天氣查詢
     tools = await load_mcp_tools()
 
-    # 建立 RouterQueryEngine，自動在 SummaryIndex 與 VectorStoreIndex 之間選路
+    # 建立 RouterQueryEngine，自動在 Summary／Vector／PropertyGraph 三種索引之間選路
     router_engine = build_router_query_engine()
 
     # 建立旅遊 Agent，負責整合工具、偏好資料並產生回答
