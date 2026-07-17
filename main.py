@@ -31,10 +31,7 @@ from tools import load_mcp_tools
 
 async def main():
     # 載入外部工具，例如網路搜尋與天氣查詢
-    mcp_clients, tools = await load_mcp_tools()
-
-    # 保留 MCP client 連線，讓終端機對話期間可以持續呼叫工具
-    _ = mcp_clients
+    tools = await load_mcp_tools()
 
     # 建立 RouterQueryEngine，自動在 SummaryIndex 與 VectorStoreIndex 之間選路
     router_engine = build_router_query_engine()

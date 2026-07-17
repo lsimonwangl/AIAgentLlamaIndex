@@ -17,55 +17,67 @@ chat.py 負責顯示啟動畫面、Router 檢索結果、工具呼叫與 Agent �
 from datetime import datetime
 from llama_index.core.agent.workflow import ToolCall, ToolCallResult
 from llama_index.core.workflow import Context
+from openai import APIError
 from prompt import read_query
 
 
 async def run_query(router_engine, agent, ctx, query: str):
-    """執行一次使用者問題：先用 Router 檢索偏好，再交給 Agent 回答。"""
+    """執行一次使用者問題：先用 Router 檢索偏好，再交給 Agent 回答。
+
+    整輪包在 try/except 裡：NVIDIA 端點限流（429/503）或連線錯誤時
+    只放棄這一輪，回到對話迴圈，不讓整個 session 掛掉。
+    """
     print("\n⏳ Agent 思考中...\n")
+    try:
+        # ── Stage 1: RouterQueryEngine 自動選路檢索 ──
+        print("🔍 RouterQueryEngine 檢索中...")
+        rag_response = router_engine.query(query)
 
-    # ── Stage 1: RouterQueryEngine 自動選路檢索 ──
-    print("🔍 RouterQueryEngine 檢索中...")
-    rag_response = router_engine.query(query)
+        # 顯示 Router 選了哪條路
+        if hasattr(rag_response, "metadata") and rag_response.metadata:
+            selector_result = rag_response.metadata.get("selector_result")
+            if selector_result:
+                # selections 是 0-based，但 LLM 的 reason 文字用 1-based（choice (1)）描述，
+                # 這裡統一轉成 1-based 並附上工具名稱，避免「選 0 卻說選 1」的混淆
+                tool_names = {
+                    1: "SummaryIndex（整體偏好）",
+                    2: "VectorStoreIndex（特定細節）",
+                    3: "PropertyGraphIndex（旅伴情境偏好）",
+                }
+                for sel in selector_result.selections:
+                    choice = sel.index + 1
+                    print(f"📋 Router 選路結果：choice ({choice}) {tool_names.get(choice, '')}")
+                    print(f"   理由：{sel.reason}")
 
-    # 顯示 Router 選了哪條路（SummaryIndex 或 VectorStoreIndex）
-    if hasattr(rag_response, "metadata") and rag_response.metadata:
-        selector_result = rag_response.metadata.get("selector_result")
-        if selector_result:
-            # selections 是 0-based，但 LLM 的 reason 文字用 1-based（choice (1)）描述，
-            # 這裡統一轉成 1-based 並附上工具名稱，避免「選 0 卻說選 1」的混淆
-            tool_names = {1: "SummaryIndex（整體偏好）", 2: "VectorStoreIndex（特定細節）"}
-            for sel in selector_result.selections:
-                choice = sel.index + 1
-                print(f"📋 Router 選路結果：choice ({choice}) {tool_names.get(choice, '')}")
-                print(f"   理由：{sel.reason}")
+        # 顯示檢索到的偏好摘要
+        rag_text = str(rag_response)
+        print(f"📋 偏好摘要：{rag_text[:200]}...")
+        print()
 
-    # 顯示檢索到的偏好摘要
-    rag_text = str(rag_response)
-    print(f"📋 偏好摘要：{rag_text[:200]}...")
-    print()
+        # ── Stage 2: 組合 Agent 輸入 ──
+        today = datetime.now().strftime("%Y-%m-%d")
+        agent_input = (
+            f"今天日期：{today}\n\n"
+            f"我過往的台灣旅遊紀錄顯示我的偏好：\n{rag_text}\n\n"
+            f"使用者問題：{query}"
+        )
 
-    # ── Stage 2: 組合 Agent 輸入 ──
-    today = datetime.now().strftime("%Y-%m-%d")
-    agent_input = (
-        f"今天日期：{today}\n\n"
-        f"我過往的台灣旅遊紀錄顯示我的偏好：\n{rag_text}\n\n"
-        f"使用者問題：{query}"
-    )
+        # ── Stage 3: Agent 回答，透過 stream_events 顯示工具呼叫 ──
+        handler = agent.run(agent_input, ctx=ctx)
 
-    # ── Stage 3: Agent 回答，透過 stream_events 顯示工具呼叫 ──
-    handler = agent.run(agent_input, ctx=ctx)
+        async for event in handler.stream_events():
+            if isinstance(event, ToolCall):
+                print(f"🔧 呼叫工具: {event.tool_name}({event.tool_kwargs})")
+            elif isinstance(event, ToolCallResult):
+                print(f"✅ 工具回傳: {str(event.tool_output)[:150]}...")
 
-    async for event in handler.stream_events():
-        if isinstance(event, ToolCall):
-            print(f"🔧 呼叫工具: {event.tool_name}({event.tool_kwargs})")
-        elif isinstance(event, ToolCallResult):
-            print(f"✅ 工具回傳: {str(event.tool_output)[:150]}...")
+        response = await handler
 
-    response = await handler
-
-    # 顯示最終回答
-    print(f"\n{response}")
+        # 顯示最終回答
+        print(f"\n{response}")
+    except APIError as error:
+        print(f"\n⚠️ NVIDIA API 呼叫失敗，這輪回答未完成：{error}")
+        print("   通常是端點限流（429/503），稍等一兩分鐘再重問一次即可。")
 
 
 async def run_chat(router_engine, agent):
