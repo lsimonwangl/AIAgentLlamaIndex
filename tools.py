@@ -12,7 +12,7 @@ Lab3 改用 llama-index-tools-mcp 的 BasicMCPClient + McpToolSpec，
     1. 使用 BasicMCPClient 以 stdio 方式連接 tavily MCP server
     2. 使用 BasicMCPClient 以 stdio 方式連接 open-meteo MCP server
     3. 透過 McpToolSpec 將 MCP 工具轉換為 LlamaIndex FunctionTool
-    4. 回傳 MCP client 與 tools 給 main.py 使用
+    4. 回傳 tools 給 main.py 使用
 
 此模組提供 load_mcp_tools() 函式供 main.py 呼叫。
 """
@@ -45,6 +45,6 @@ async def load_mcp_tools():
     meteo_spec = McpToolSpec(client=meteo_client)               # 包成 ToolSpec
     meteo_tools = await meteo_spec.to_tool_list_async()         # 取得工具清單
 
-    # 兩個 server 的工具合併成單一清單回傳；client 一併回傳供 main.py 後續關閉連線
+    # 兩個 server 的工具合併成單一清單回傳
     print(f"🔧 已載入 MCP 工具：Tavily {len(tavily_tools)} 個、Open-Meteo {len(meteo_tools)} 個")
-    return [tavily_client, meteo_client], tavily_tools + meteo_tools
+    return tavily_tools + meteo_tools
