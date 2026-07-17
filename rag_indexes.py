@@ -69,40 +69,27 @@ def load_data_docs():
     return reader.load_data()
 
 
-def split_docs_by_record(documents):
-    """把語料整理成一筆旅遊紀錄一個 Document，並補上旅次與旅伴 metadata（僅供建圖使用）。
+def build_graph_docs(documents):
+    """為每筆紀錄（一檔一筆）補上旅次與旅伴 metadata（僅供建圖使用）。
 
-    旅伴欄位只在每份紀錄開頭，後段 chunk 抽三元組時看不到「這是哪一次旅次、
-    和誰同行」；把紀錄標題與旅伴放進 metadata，抽取時每個 chunk 都帶著
-    這兩項上下文，旅次節點命名才會一致、圖才接得起來。
-
-    支援兩種語料形態：一檔一筆紀錄（旅次名取自檔名），
-    或含「===== 標題 =====」分隔的合集檔（依標題切分）。
+    旅伴欄位只在紀錄開頭，後段 chunk 抽三元組時看不到「這是哪一次旅次、
+    和誰同行」；把檔名（旅次名）與旅伴放進 metadata，抽取時每個 chunk
+    都帶著這兩項上下文，旅次節點命名才會一致、圖才接得起來。
     """
     records = []
     for doc in documents:
-        parts = re.split(r"^=====\s*(.+?)\s*=====\s*$", doc.text, flags=re.MULTILINE)
-        if len(parts) > 1:
-            # 合集檔：re.split 結果為 [前導, 標題1, 內文1, 標題2, 內文2, ...]
-            titled_bodies = list(zip(parts[1::2], parts[2::2]))
-        else:
-            # 一檔一筆紀錄：旅次名取自檔名（去掉副檔名）
-            file_name = doc.metadata.get("file_name", "")
-            title = os.path.splitext(file_name)[0] or "未知旅次"
-            titled_bodies = [(title, doc.text)]
-
-        for title, body in titled_bodies:
-            companion = re.search(r"同行人數：(.+)", body)
-            records.append(
-                Document(
-                    text=body.strip(),
-                    metadata={
-                        "旅遊紀錄": title,
-                        "同行旅伴": companion.group(1).strip() if companion else "未知",
-                    },
-                )
+        title = os.path.splitext(doc.metadata.get("file_name", ""))[0] or "未知旅次"
+        companion = re.search(r"同行人數：(.+)", doc.text)
+        records.append(
+            Document(
+                text=doc.text.strip(),
+                metadata={
+                    "旅遊紀錄": title,
+                    "同行旅伴": companion.group(1).strip() if companion else "未知",
+                },
             )
-    return records or documents
+        )
+    return records
 
 
 def build_splitter():
@@ -157,7 +144,7 @@ def build_graph_index(documents, splitter, llm, embed_model):
 
     def _extract():
         return PropertyGraphIndex.from_documents(
-            split_docs_by_record(documents),                  # 一筆紀錄一個 Document，metadata 帶旅次與旅伴
+            build_graph_docs(documents),                      # 每筆紀錄的 metadata 帶旅次與旅伴
             llm=llm,
             embed_model=embed_model,
             kg_extractors=[kg_extractor],
