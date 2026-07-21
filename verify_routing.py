@@ -1,5 +1,5 @@
 """
-驗證 RouterQueryEngine 三條路由的選路結果與圖譜偏好聚合輸出。
+驗證 RouterQueryEngine 三條路由的選路結果。
 
 執行方式：
     venv/Scripts/python.exe verify_routing.py
@@ -16,12 +16,12 @@ load_dotenv()
 from rag import build_router_query_engine
 
 # 與 rag.py 中 query_engine_tools 的順序一致
-TOOL_NAMES = ["SummaryIndex", "VectorStoreIndex", "PropertyGraphIndex"]
+TOOL_NAMES = ["SummaryIndex", "VectorStoreIndex", "DocumentSummaryIndex"]
 
 CASES = [
-    ("這次我想自己一個人去大阪三天兩夜，照我過去獨旅的偏好規劃", "PropertyGraphIndex"),
     ("我的旅遊紀錄整體風格是什麼", "SummaryIndex"),
     ("幫我找像台南木門厝那種老屋民宿", "VectorStoreIndex"),
+    ("回顧我過去和這次最像的那幾趟完整旅行紀錄", "DocumentSummaryIndex"),
 ]
 
 
@@ -40,12 +40,6 @@ def main():
         print(f"[{status}] {query}")
         print(f"       預期 {expected}，實際 {chosen}")
         print(f"       理由：{result.selections[0].reason}")
-
-    print("\n=== PropertyGraphIndex 輸出驗證（獨旅偏好聚合，應涵蓋台南＋新竹） ===")
-    response = router._query_engines[TOOL_NAMES.index("PropertyGraphIndex")].query(
-        CASES[0][0]
-    )
-    print(str(response))
 
     assert failures == 0, f"{failures} 個選路案例失敗"
     print("\n全部選路案例通過")
