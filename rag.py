@@ -34,7 +34,7 @@ import rag_indexes
 # ── 檢索設定常數 ──
 VECTOR_TOP_K = 5
 GRAPH_TOP_K = 8       # 聚合型問題需要較廣的錨點起點
-GRAPH_PATH_DEPTH = 2  # 沿圖走兩步：旅伴→旅次→景點/住宿/美食
+GRAPH_PATH_DEPTH = 2  # 沿圖走兩步：旅伴→旅行事件→目的地
 
 # ── 自訂 QA prompt：把 RAG 從「直接回答問題」改為「整理過往台灣經驗作為素材」 ──
 # 這樣即使使用者問海外目的地（例：京都有溪谷步道嗎），RAG 不會回「無京都資料」，
