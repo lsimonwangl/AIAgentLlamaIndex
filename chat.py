@@ -42,6 +42,7 @@ async def run_query(router_engine, agent, ctx, query: str):
                 tool_names = {
                     1: "SummaryIndex（整體偏好）",
                     2: "VectorStoreIndex（特定細節）",
+                    3: "DocumentSummaryIndex（整趟紀錄回顧）",
                 }
                 for sel in selector_result.selections:
                     choice = sel.index + 1

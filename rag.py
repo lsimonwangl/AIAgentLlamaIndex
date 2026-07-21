@@ -2,19 +2,20 @@
 Router RAG - 旅遊偏好檢索器
 ===========================
 rag.py 負責組裝 RouterQueryEngine：從 rag_clients.py 取得模型與 Milvus
-連線、從 rag_indexes.py 取得兩種索引，包成 QueryEngineTool 後交由
+連線、從 rag_indexes.py 取得三種索引，包成 QueryEngineTool 後交由
 RouterQueryEngine 依問題類型自動選擇檢索方式。
 
-相較於 Lab2 只使用單一 VectorStoreIndex，Lab3 新增 SummaryIndex，
-讓系統能針對不同類型的問題選擇最適合的檢索策略：
+相較於 Lab2 只使用單一 VectorStoreIndex，Lab3 新增 SummaryIndex 與
+DocumentSummaryIndex，讓系統能針對不同類型的問題選擇最適合的檢索策略：
     - SummaryIndex：掃過所有紀錄做摘要，適合歸納整體旅遊風格
     - VectorStoreIndex：向量相似度檢索，適合查詢特定體驗細節
+    - DocumentSummaryIndex：以每篇文件摘要為檢索單位，選出最相關的整趟紀錄
 
 執行流程：
     0. 載入套件與環境變數
     1. 透過 rag_clients 建立 LLM、Embedding Model、Milvus 連線
-    2. 透過 rag_indexes 讀取 ./data 並建立兩個索引
-    3. 將兩個索引包成 QueryEngineTool，寫明各自適合的問題類型
+    2. 透過 rag_indexes 讀取 ./data 並建立三個索引
+    3. 將三個索引包成 QueryEngineTool，寫明各自適合的問題類型
     4. 透過 RouterQueryEngine + LLMSingleSelector 自動選路
 
 此模組提供 build_router_query_engine() 函式供 main.py 呼叫。
@@ -32,6 +33,7 @@ import rag_indexes
 
 # ── 檢索設定常數 ──
 VECTOR_TOP_K = 5
+DOC_SUMMARY_TOP_K = 3  # 以文件摘要相似度挑出最相關的 3 趟旅行紀錄
 
 # ── 自訂 QA prompt：把 RAG 從「直接回答問題」改為「整理過往台灣經驗作為素材」 ──
 # 這樣即使使用者問海外目的地（例：京都有溪谷步道嗎），RAG 不會回「無京都資料」，
@@ -56,8 +58,8 @@ ORGANIZE_QA_TEMPLATE = PromptTemplate(
 )
 
 
-def _build_tools(summary_index, vector_index, llm):
-    """把兩個索引包成 QueryEngineTool；description 是 RouterQueryEngine 選路時唯一的判斷依據。"""
+def _build_tools(summary_index, vector_index, doc_summary_index, llm):
+    """把三個索引包成 QueryEngineTool；description 是 RouterQueryEngine 選路時唯一的判斷依據。"""
     summary_tool = QueryEngineTool.from_defaults(
         query_engine=summary_index.as_query_engine(
             llm=llm,
@@ -84,11 +86,26 @@ def _build_tools(summary_index, vector_index, llm):
         ),
     )
 
-    return [summary_tool, vector_tool]
+    doc_summary_tool = QueryEngineTool.from_defaults(
+        query_engine=doc_summary_index.as_query_engine(
+            llm=llm,
+            retriever_mode="embedding",   # 以文件摘要的向量相似度挑文件（非每次 LLM 選文件）
+            similarity_top_k=DOC_SUMMARY_TOP_K,
+            text_qa_template=ORGANIZE_QA_TEMPLATE,
+        ),
+        description=(
+            "適合「以整趟旅行為單位」找出與提問最相關的幾筆完整旅遊紀錄，"
+            "先比對每篇文件的摘要挑出最相關的旅行，再帶回那幾趟的完整內容回顧，"
+            "定位介於 VectorStoreIndex（片段級細節）與 SummaryIndex（全讀總覽）之間。"
+            "例如：回顧我最相關的幾趟山區旅行、哪幾趟旅行的整體規劃和這次最像。"
+        ),
+    )
+
+    return [summary_tool, vector_tool, doc_summary_tool]
 
 
 def build_router_query_engine():
-    """建立 RouterQueryEngine，依問題類型自動在 SummaryIndex/VectorStoreIndex 之間選路。"""
+    """建立 RouterQueryEngine，依問題類型自動在 SummaryIndex/VectorStoreIndex/DocumentSummaryIndex 之間選路。"""
     llm = rag_clients.build_llm()
     embed_model = rag_clients.build_embed_model()
     vector_store = rag_clients.build_milvus_vector_store()
@@ -99,13 +116,15 @@ def build_router_query_engine():
 
     summary_index = rag_indexes.build_summary_index(documents, splitter)
     vector_index = rag_indexes.build_vector_index(documents, splitter, embed_model, vector_store)
+    doc_summary_index = rag_indexes.build_document_summary_index(documents, splitter, llm, embed_model)
 
-    tools = _build_tools(summary_index, vector_index, llm)
+    tools = _build_tools(summary_index, vector_index, doc_summary_index, llm)
 
-    # selector 會把使用者問題連同上面兩個工具的 description 一起交給 LLM，
+    # selector 會把使用者問題連同上面三個工具的 description 一起交給 LLM，
     # description 是 LLM 選路時唯一讀到的判斷依據：
     #   總覽型問題 → summary_tool（SummaryIndex，綜觀全部紀錄做摘要）
     #   檢索型問題 → vector_tool（VectorStoreIndex，top-k 相似檢索）
+    #   整趟紀錄回顧 → doc_summary_tool（DocumentSummaryIndex，以摘要挑整篇文件）
     router_engine = RouterQueryEngine(
         selector=PydanticSingleSelector.from_defaults(llm=llm),
         query_engine_tools=tools,
@@ -118,5 +137,5 @@ def build_router_query_engine():
         logging.WARNING
     )
 
-    print("✅ RouterQueryEngine 建立完成（SummaryIndex + VectorStoreIndex）")
+    print("✅ RouterQueryEngine 建立完成（SummaryIndex + VectorStoreIndex + DocumentSummaryIndex）")
     return router_engine

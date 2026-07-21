@@ -1,20 +1,23 @@
 """
 Router RAG - 索引建構
 =====================
-rag_indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立兩種索引：
+rag_indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立三種索引：
     - SummaryIndex：掃過所有紀錄做摘要，適合歸納整體旅遊風格
     - VectorStoreIndex：向量相似度檢索，適合查詢特定體驗細節
+    - DocumentSummaryIndex：以「每篇文件摘要」為檢索單位，選出最相關的整趟紀錄
 
 每個 build_*_index() 只負責「documents → index」，所需的 client 物件
-（embed_model、vector_store）一律由呼叫端（rag.py）透過
+（llm、embed_model、vector_store）一律由呼叫端（rag.py）透過
 rag_clients.py 建立後傳入，本檔案不處理連線設定。
 """
 
 from llama_index.core import (
+    DocumentSummaryIndex,
     SimpleDirectoryReader,
     StorageContext,
     SummaryIndex,
     VectorStoreIndex,
+    get_response_synthesizer,
 )
 from llama_index.core.node_parser import SentenceSplitter
 
@@ -67,4 +70,33 @@ def build_vector_index(documents, splitter, embed_model, vector_store):
         transformations=[splitter],
         # 把 chunk 轉成向量的 embedding model
         embed_model=embed_model,
+    )
+
+
+# ── 建立 DocumentSummaryIndex：以「每篇文件摘要」為檢索單位 ────────
+def build_document_summary_index(documents, splitter, llm, embed_model):
+    """建立 DocumentSummaryIndex：每篇文件先由 LLM 生一段摘要，查詢時用摘要挑文件。
+
+    和 SummaryIndex 的差別：SummaryIndex 查詢時才掃全部 chunk；這裡在「建索引時」
+    就替每份文件（一檔一趟旅行）各生一段摘要，查詢時先比對這些摘要選出最相關的
+    幾趟，再把那幾趟的完整 chunk 帶回合成——檢索單位是「整篇」而非「片段」。
+
+    代價：建索引時每份文件各呼叫一次 LLM 生摘要（20 篇＝20 次），可能撞 NVIDIA
+    端點限流；全同步（use_async=False）避免在 main.py 的 event loop 內巢狀 asyncio.run()。
+    """
+    print("📝 建立 DocumentSummaryIndex（每篇各生一段 LLM 摘要）...")
+    # tree_summarize：把單篇的多個 chunk 分組局部摘要再逐層合併成該篇的整篇摘要
+    response_synthesizer = get_response_synthesizer(response_mode="tree_summarize", use_async=False)
+    return DocumentSummaryIndex.from_documents(
+        documents,
+        # 生每篇摘要用的 LLM
+        llm=llm,
+        # 摘要向量化用的 embedding model，供查詢時以摘要相似度挑文件
+        embed_model=embed_model,
+        # 與其他索引相同的切分設定
+        transformations=[splitter],
+        # 生成每篇整篇摘要的合成器
+        response_synthesizer=response_synthesizer,
+        # 顯示建索引進度條
+        show_progress=True,
     )
