@@ -58,11 +58,8 @@ ORGANIZE_QA_TEMPLATE = PromptTemplate(
 )
 
 
-def _build_tools(summary_index, vector_index, doc_summary_index, llm, summary_llm):
-    """把三個索引包成 QueryEngineTool；description 是 RouterQueryEngine 選路時唯一的判斷依據。
-
-    summary_llm 是 DocumentSummaryIndex 專用的便宜快速模型，只用於該路由。
-    """
+def _build_tools(summary_index, vector_index, doc_summary_index, llm):
+    """把三個索引包成 QueryEngineTool；description 是 RouterQueryEngine 選路時唯一的判斷依據。"""
     summary_tool = QueryEngineTool.from_defaults(
         query_engine=summary_index.as_query_engine(
             llm=llm,
@@ -91,7 +88,7 @@ def _build_tools(summary_index, vector_index, doc_summary_index, llm, summary_ll
 
     doc_summary_tool = QueryEngineTool.from_defaults(
         query_engine=doc_summary_index.as_query_engine(
-            llm=summary_llm,              # 便宜快速模型：合成也用它
+            llm=llm,                      # 合成用主模型 CHAT_MODEL；SUMMARY_MODEL 只用在建索引的摘要
             retriever_mode="embedding",   # 以文件摘要的向量相似度挑文件（非每次 LLM 選文件）
             similarity_top_k=DOC_SUMMARY_TOP_K,
             text_qa_template=ORGANIZE_QA_TEMPLATE,
@@ -110,7 +107,7 @@ def _build_tools(summary_index, vector_index, doc_summary_index, llm, summary_ll
 def build_router_query_engine():
     """建立 RouterQueryEngine，依問題類型自動在 SummaryIndex/VectorStoreIndex/DocumentSummaryIndex 之間選路。"""
     llm = rag_clients.build_llm()
-    summary_llm = rag_clients.build_summary_llm()  # DocumentSummaryIndex 專用的便宜快速模型
+    summary_llm = rag_clients.build_summary_llm()  # 便宜快速模型，只用於建 DocumentSummaryIndex 的每篇摘要
     embed_model = rag_clients.build_embed_model()
     vector_store = rag_clients.build_milvus_vector_store()
     splitter = rag_indexes.build_splitter()
@@ -122,7 +119,7 @@ def build_router_query_engine():
     vector_index = rag_indexes.build_vector_index(documents, splitter, embed_model, vector_store)
     doc_summary_index = rag_indexes.build_document_summary_index(documents, splitter, summary_llm, embed_model)
 
-    tools = _build_tools(summary_index, vector_index, doc_summary_index, llm, summary_llm)
+    tools = _build_tools(summary_index, vector_index, doc_summary_index, llm)
 
     # selector 會把使用者問題連同上面三個工具的 description 一起交給 LLM，
     # description 是 LLM 選路時唯一讀到的判斷依據：
