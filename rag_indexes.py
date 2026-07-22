@@ -1,10 +1,11 @@
 """
 Router RAG - 索引建構
 =====================
-rag_indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立三種索引：
+rag_indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立四種索引：
     - SummaryIndex：掃過所有紀錄做摘要，適合歸納整體旅遊風格
     - VectorStoreIndex：向量相似度檢索，適合查詢特定體驗細節
     - DocumentSummaryIndex：以「每篇文件摘要」為檢索單位，選出最相關的整趟紀錄
+    - KeywordTableIndex：LLM 抽關鍵字建反向表，適合精確名稱／專有名詞的字面命中
 
 每個 build_*_index() 只負責「documents → index」，所需的 client 物件
 （llm、embed_model、vector_store）一律由呼叫端（rag.py）透過
@@ -13,6 +14,7 @@ rag_clients.py 建立後傳入，本檔案不處理連線設定。
 
 from llama_index.core import (
     DocumentSummaryIndex,
+    KeywordTableIndex,
     SimpleDirectoryReader,
     StorageContext,
     SummaryIndex,
@@ -98,6 +100,29 @@ def build_document_summary_index(documents, splitter, llm, embed_model):
         transformations=[splitter],
         # 生成每篇整篇摘要的合成器
         response_synthesizer=response_synthesizer,
+        # 顯示建索引進度條
+        show_progress=True,
+    )
+
+
+# ── 建立 KeywordTableIndex：精確名稱／專有名詞的字面命中 ────────
+def build_keyword_index(documents, splitter, llm):
+    """建立 KeywordTableIndex：LLM 逐 chunk 抽關鍵字建「關鍵字→chunk」反向表。
+
+    查詢時抽問題關鍵字去表裡精確命中，按共同關鍵字數排序取回 chunk——屬於
+    字面（sparse）檢索，適合「某個確切名稱是否出現、在哪幾趟」這類問題。
+    用 LLM 抽關鍵字（非 SimpleKeywordTableIndex 的 regex），中文免斷詞、免 jieba。
+
+    代價：建索引時逐 chunk 各打一次 LLM，呼叫次數比 DocumentSummaryIndex 多；
+    傳入的 llm 建議用便宜快速模型（抽關鍵字不需高階模型）。
+    """
+    print("🔑 建立 KeywordTableIndex（LLM 抽關鍵字）...")
+    return KeywordTableIndex.from_documents(
+        documents,
+        # 抽關鍵字用的 LLM（建索引逐 chunk、查詢時抽問題關鍵字都用它）
+        llm=llm,
+        # 與其他索引相同的切分設定
+        transformations=[splitter],
         # 顯示建索引進度條
         show_progress=True,
     )
