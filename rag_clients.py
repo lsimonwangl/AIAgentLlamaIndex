@@ -28,17 +28,30 @@ MILVUS_COLLECTION = "travel_preferences"
 EMBED_DIM = 2048  # 需與 embedding 模型輸出維度一致
 
 
-def build_llm():
-    """建立 LLM 實例（透過 OpenAI-compatible 端點呼叫 NVIDIA NIM）。"""
+def build_llm(model=None):
+    """建立 LLM 實例（透過 OpenAI-compatible 端點呼叫 NVIDIA NIM）。
+
+    model 不傳時用 .env 的 CHAT_MODEL；傳入時改用指定模型
+    （例如 DocumentSummaryIndex 建摘要用的便宜快速模型）。
+    """
     return OpenAILike(
         api_base=LLM_API_BASE,
         api_key=os.getenv("NVIDIA_API_KEY"),
-        model=os.getenv("CHAT_MODEL"),
+        model=model or os.getenv("CHAT_MODEL"),
         is_chat_model=True,
         is_function_calling_model=True,
         context_window=LLM_CONTEXT_WINDOW,
         timeout=LLM_TIMEOUT,
     )
+
+
+def build_summary_llm():
+    """建立 DocumentSummaryIndex 專用 LLM：讀 .env 的 SUMMARY_MODEL（便宜快速的模型）。
+
+    DocumentSummaryIndex 建索引時每篇各打一次 LLM 生摘要，用小模型省時省額度；
+    未設 SUMMARY_MODEL 時 fallback 回 CHAT_MODEL。
+    """
+    return build_llm(os.getenv("SUMMARY_MODEL"))
 
 
 def build_embed_model():

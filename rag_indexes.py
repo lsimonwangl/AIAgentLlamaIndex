@@ -86,7 +86,8 @@ def build_document_summary_index(documents, splitter, llm, embed_model):
     """
     print("📝 建立 DocumentSummaryIndex（每篇各生一段 LLM 摘要）...")
     # tree_summarize：把單篇的多個 chunk 分組局部摘要再逐層合併成該篇的整篇摘要
-    response_synthesizer = get_response_synthesizer(response_mode="tree_summarize", use_async=False)
+    # llm 要傳進來，否則 synthesizer 會 fallback 到全域 Settings.llm（預設 OpenAI）而非 SUMMARY_MODEL
+    response_synthesizer = get_response_synthesizer(llm=llm, response_mode="tree_summarize", use_async=False)
     return DocumentSummaryIndex.from_documents(
         documents,
         # 生每篇摘要用的 LLM
