@@ -1,15 +1,15 @@
 """
 Router RAG - 索引建構
 =====================
-rag_indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立四種索引：
+indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立四種索引：
     - SummaryIndex：掃過所有紀錄做摘要，適合歸納整體旅遊風格
     - VectorStoreIndex：向量相似度檢索，適合查詢特定體驗細節
     - DocumentSummaryIndex：以「每篇文件摘要」為檢索單位，選出最相關的整趟紀錄
     - KeywordTableIndex：LLM 抽關鍵字建反向表，適合精確名稱／專有名詞的字面命中
 
 每個 build_*_index() 只負責「documents → index」，所需的 client 物件
-（llm、embed_model、vector_store）一律由呼叫端（rag.py）透過
-rag_clients.py 建立後傳入，本檔案不處理連線設定。
+（llm、embed_model、vector_store）一律由呼叫端（engine.py）透過
+clients.py 建立後傳入，本檔案不處理連線設定。
 """
 
 from llama_index.core import (

@@ -25,7 +25,7 @@ load_dotenv()
 import asyncio
 from agent import build_agent
 from chat import run_chat
-from rag import build_router_query_engine
+from rag.engine import build_router_query_engine
 from tools import load_mcp_tools
 
 

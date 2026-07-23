@@ -13,9 +13,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from rag import build_router_query_engine
+from rag.engine import build_router_query_engine
 
-# 與 rag.py 中 query_engine_tools 的順序一致
+# 與 rag/engine.py 中 query_engine_tools 的順序一致
 TOOL_NAMES = ["SummaryIndex", "VectorStoreIndex", "DocumentSummaryIndex", "KeywordTableIndex"]
 
 CASES = [

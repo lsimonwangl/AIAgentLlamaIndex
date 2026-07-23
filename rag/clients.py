@@ -1,13 +1,13 @@
 """
 Router RAG - 模型與連線 Client
 =============================
-rag_clients.py 集中管理需要對外連線的 client 物件：
+clients.py 集中管理需要對外連線的 client 物件：
     - LLM（NVIDIA NIM，透過 OpenAI-compatible 端點）
     - Embedding Model（NVIDIA）
     - Milvus VectorStore（向量資料庫連線）
 
 集中在此檔案的原因：API 端點、金鑰、URI 這類連線設定是最常需要調整的
-部分，統一放在一起維護；rag_indexes.py 的索引建構邏輯只需要拿到建好
+部分，統一放在一起維護；indexes.py 的索引建構邏輯只需要拿到建好
 的 client 物件使用，不需要知道連線細節。
 """
 
