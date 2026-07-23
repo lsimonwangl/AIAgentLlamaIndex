@@ -1,5 +1,5 @@
 """
-驗證 RouterQueryEngine 三條路由的選路結果。
+驗證 RouterQueryEngine 四條路由的選路結果。
 
 執行方式：
     venv/Scripts/python.exe verify_routing.py
@@ -13,15 +13,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from rag import build_router_query_engine
+from rag.router import build_router_query_engine
 
-# 與 rag.py 中 query_engine_tools 的順序一致
-TOOL_NAMES = ["SummaryIndex", "VectorStoreIndex", "DocumentSummaryIndex"]
+# 與 rag/router.py 中 query_engine_tools 的順序一致
+TOOL_NAMES = ["SummaryIndex", "VectorStoreIndex", "DocumentSummaryIndex", "KeywordTableIndex"]
 
 CASES = [
     ("我的旅遊紀錄整體風格是什麼", "SummaryIndex"),
     ("幫我找像台南木門厝那種老屋民宿", "VectorStoreIndex"),
     ("回顧我過去和這次最像的那幾趟完整旅行紀錄", "DocumentSummaryIndex"),
+    ("哪幾趟旅行有走過砂卡礑步道", "KeywordTableIndex"),
 ]
 
 
