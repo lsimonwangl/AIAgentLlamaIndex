@@ -8,7 +8,7 @@ indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立四種索引：
     - KeywordTableIndex：LLM 抽關鍵字建反向表，適合精確名稱／專有名詞的字面命中
 
 每個 build_*_index() 只負責「documents → index」，所需的 client 物件
-（llm、embed_model、vector_store）一律由呼叫端（engine.py）透過
+（llm、embed_model、vector_store）一律由呼叫端（router.py）透過
 clients.py 建立後傳入，本檔案不處理連線設定。
 """
 

@@ -1,7 +1,7 @@
 """
 Router RAG - 旅遊偏好檢索器
 ===========================
-engine.py 負責組裝 RouterQueryEngine：從 clients.py 取得模型與 Milvus
+router.py 負責組裝 RouterQueryEngine：從 clients.py 取得模型與 Milvus
 連線、從 indexes.py 取得四種索引，包成 QueryEngineTool 後交由
 RouterQueryEngine 依問題類型自動選擇檢索方式。
 
