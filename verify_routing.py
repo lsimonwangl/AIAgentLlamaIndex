@@ -20,9 +20,9 @@ TOOL_NAMES = ["SummaryIndex", "VectorStoreIndex", "DocumentSummaryIndex", "Keywo
 
 CASES = [
     ("我的旅遊紀錄整體風格是什麼", "SummaryIndex"),
-    ("幫我找像台南木門厝那種老屋民宿", "VectorStoreIndex"),
+    ("我想去日本大阪走那種沿溪谷、水很清的健行步道,幫我照過去走過的類似路線推薦", "VectorStoreIndex"),
     ("回顧我過去和這次最像的那幾趟完整旅行紀錄", "DocumentSummaryIndex"),
-    ("哪幾趟旅行有走過砂卡礑步道", "KeywordTableIndex"),
+    ("我想在日本找老屋民宿，參考我住過的「木門厝」", "KeywordTableIndex"),
 ]
 
 
