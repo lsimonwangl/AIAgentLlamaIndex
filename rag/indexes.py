@@ -7,9 +7,7 @@ indexes.py 負責把 ./data 的旅遊紀錄讀入，並建立四種索引：
     - DocumentSummaryIndex：以「每篇文件摘要」為檢索單位，選出最相關的整趟紀錄
     - KeywordTableIndex：LLM 抽關鍵字建反向表，適合精確名稱／專有名詞的字面命中
 
-每個 build_*_index() 只負責「documents → index」，所需的 client 物件
-（llm、embed_model、vector_store）一律由呼叫端（router.py）透過
-clients.py 建立後傳入，本檔案不處理連線設定。
+此模組提供 load_data_docs()、build_splitter() 與各 build_*_index() 函式供 router.py 呼叫。
 """
 
 from llama_index.core import (
@@ -51,7 +49,14 @@ def build_splitter():
 
 # ── 建立 SummaryIndex：適合聚合型問題 ─────────────────
 def build_summary_index(documents, splitter):
-    """建立 SummaryIndex：查詢時掃過所有 chunk 做 tree_summarize，適合聚合型問題。"""
+    """建立 SummaryIndex：把 chunk 存成序列，查詢時全部送進 LLM 做 tree_summarize。
+
+    和其他索引不同，它建索引時不做任何預處理（不打 LLM、不嵌入），只把切好的
+    chunk 存起來；成本都在查詢時——會掃過全部chunk 逐層摘要合併，適合歸納
+    整體旅遊風格、跨紀錄統計這類需要綜觀全部紀錄的總覽型問題。
+
+    代價：查詢時把全部 chunk 送進 LLM，語料越大查詢越慢、越貴。
+    """
     print("📋 建立 SummaryIndex...")
     # 建索引前先用 splitter 切 chunk；SummaryIndex 本身不做預處理，成本在查詢時
     return SummaryIndex.from_documents(documents, transformations=[splitter])
@@ -59,7 +64,15 @@ def build_summary_index(documents, splitter):
 
 # ── 建立 VectorStoreIndex：適合細節型問題 ─────────────
 def build_vector_index(documents, splitter, embed_model, vector_store):
-    """建立 VectorStoreIndex：把傳入的 vector_store（Milvus）包進 StorageContext 後向量化寫入。"""
+    """建立 VectorStoreIndex：把每個 chunk 嵌入成向量存進 Milvus，查詢時做相似度檢索。
+
+    建索引時用 embed_model 把 chunk 轉成向量、寫進傳入的 vector_store（Milvus）；
+    查詢時把問題也轉成向量，取相似度最高的 top-k 個 chunk——屬於語意（dense）檢索，
+    適合查詢某次旅行的景點體驗、美食評價、住宿細節這類具體問題。
+
+    代價：建索引要對每個 chunk 打一次 embedding（非 chat LLM，便宜快）；向量存在
+    Milvus，需要 vector_store 連線（由 router.py 建好傳入）。
+    """
     print("🔢 建立 VectorStoreIndex + Milvus...")
     # 把 Milvus 連線注入儲存層，向量會存進 Milvus 而非預設記憶體
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
@@ -83,8 +96,8 @@ def build_document_summary_index(documents, splitter, llm, embed_model):
     就替每份文件（一檔一趟旅行）各生一段摘要，查詢時先比對這些摘要選出最相關的
     幾趟，再把那幾趟的完整 chunk 帶回合成——檢索單位是「整篇」而非「片段」。
 
-    代價：建索引時每份文件各呼叫一次 LLM 生摘要（20 篇＝20 次），可能撞 NVIDIA
-    端點限流；全同步（use_async=False）避免在 main.py 的 event loop 內巢狀 asyncio.run()。
+    代價：建索引時要逐篇文件各打一次 LLM，呼叫次數比 SummaryIndex 多；傳入的 llm
+    建議用便宜快速模型。
     """
     print("📝 建立 DocumentSummaryIndex（每篇各生一段 LLM 摘要）...")
     # tree_summarize：把單篇的多個 chunk 分組局部摘要再逐層合併成該篇的整篇摘要
@@ -109,12 +122,12 @@ def build_document_summary_index(documents, splitter, llm, embed_model):
 def build_keyword_index(documents, splitter, llm):
     """建立 KeywordTableIndex：LLM 逐 chunk 抽關鍵字建「關鍵字→chunk」反向表。
 
-    查詢時抽問題關鍵字去表裡精確命中，按共同關鍵字數排序取回 chunk——屬於
-    字面（sparse）檢索，適合「某個確切名稱是否出現、在哪幾趟」這類問題。
-    用 LLM 抽關鍵字（非 SimpleKeywordTableIndex 的 regex），中文免斷詞、免 jieba。
+    查詢時同樣抽出問題的關鍵字，到反向表做字面比對，再依命中的共同關鍵字數
+    排序取回 chunk——屬於字面（sparse）檢索，適合回答「某個確切名稱有沒有
+    出現、在哪幾趟」這類問題。
 
     代價：建索引時逐 chunk 各打一次 LLM，呼叫次數比 DocumentSummaryIndex 多；
-    傳入的 llm 建議用便宜快速模型（抽關鍵字不需高階模型）。
+    傳入的 llm 建議用便宜快速模型。
     """
     print("🔑 建立 KeywordTableIndex（LLM 抽關鍵字）...")
     return KeywordTableIndex.from_documents(
