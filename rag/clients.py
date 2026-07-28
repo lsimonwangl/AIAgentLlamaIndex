@@ -25,7 +25,7 @@ LLM_TIMEOUT = 300.0
 # ── Milvus 連線設定 ──
 MILVUS_URI = "http://localhost:19530"
 MILVUS_COLLECTION = "travel_preferences"
-EMBED_DIM = 2048  # 需與 embedding 模型輸出維度一致
+EMBED_DIM = 4096  # 需與 embedding 模型輸出維度一致（nv-embed-v1 為 4096）
 
 
 def build_llm(model=None):
