@@ -52,7 +52,7 @@ def build_summary_index(documents, splitter):
     """建立 SummaryIndex：把 chunk 存成序列，查詢時全部送進 LLM 做 tree_summarize。
 
     和其他索引不同，它建索引時不做任何預處理（不打 LLM、不嵌入），只把切好的
-    chunk 存起來；成本都在查詢時——會掃過全部chunk 逐層摘要合併，適合歸納
+    chunk 存起來；成本都在查詢時——會掃過全部 chunk 逐層摘要合併，適合歸納
     整體旅遊風格、跨紀錄統計這類需要綜觀全部紀錄的總覽型問題。
 
     代價：查詢時把全部 chunk 送進 LLM，語料越大查詢越慢、越貴。

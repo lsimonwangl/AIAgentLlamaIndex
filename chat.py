@@ -34,21 +34,20 @@ async def run_query(router_engine, agent, ctx, query: str):
         rag_response = router_engine.query(query)
 
         # 顯示 Router 選了哪條路
-        if hasattr(rag_response, "metadata") and rag_response.metadata:
-            selector_result = rag_response.metadata.get("selector_result")
-            if selector_result:
-                # selections 是 0-based，但 LLM 的 reason 文字用 1-based（choice (1)）描述，
-                # 這裡統一轉成 1-based 並附上工具名稱，避免「選 0 卻說選 1」的混淆
-                tool_names = {
-                    1: "SummaryIndex（整體偏好）",
-                    2: "VectorStoreIndex（特定細節）",
-                    3: "DocumentSummaryIndex（整趟紀錄回顧）",
-                    4: "KeywordTableIndex（精確名稱命中）",
-                }
-                for sel in selector_result.selections:
-                    choice = sel.index + 1
-                    print(f"📋 Router 選路結果：choice ({choice}) {tool_names.get(choice, '')}")
-                    print(f"   理由：{sel.reason}")
+        # selections 是 0-based，但 LLM 的 reason 文字用 1-based（choice (1)）描述，
+        # 這裡統一轉成 1-based 並附上工具名稱，避免「選 0 卻說選 1」的混淆
+        selector_result = (rag_response.metadata or {}).get("selector_result")
+        if selector_result:
+            tool_names = {
+                1: "SummaryIndex（整體偏好）",
+                2: "VectorStoreIndex（特定細節）",
+                3: "DocumentSummaryIndex（整趟紀錄回顧）",
+                4: "KeywordTableIndex（精確名稱命中）",
+            }
+            for sel in selector_result.selections:
+                choice = sel.index + 1
+                print(f"📋 Router 選路結果：choice ({choice}) {tool_names.get(choice, '')}")
+                print(f"   理由：{sel.reason}")
 
         # 顯示檢索到的偏好摘要
         rag_text = str(rag_response)
