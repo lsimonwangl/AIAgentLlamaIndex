@@ -59,11 +59,12 @@ ORGANIZE_QA_TEMPLATE = PromptTemplate(
 )
 
 
-def _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, llm):
+def _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, llm, summary_llm):
     """把四個索引包成 QueryEngineTool；description 是 RouterQueryEngine 選路時唯一的判斷依據。"""
     summary_tool = QueryEngineTool.from_defaults(
         query_engine=summary_index.as_query_engine(
-            llm=llm,
+            # 用便宜模型：tree_summarize 查詢時會掃過全部 chunk，是四條路最吃 token 的
+            llm=summary_llm,
             response_mode="tree_summarize",  # 樹狀摘要：分組局部摘要，再逐層向上合併成總結
             summary_template=ORGANIZE_QA_TEMPLATE,
         ),
@@ -136,7 +137,7 @@ def build_router_query_engine():
     doc_summary_index = indexes.build_document_summary_index(documents, splitter, summary_llm, embed_model)
     keyword_index = indexes.build_keyword_index(documents, splitter, summary_llm)  # 抽關鍵字用便宜模型
 
-    tools = _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, llm)
+    tools = _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, llm, summary_llm)
 
     # selector 會把使用者問題連同上面四個工具的 description 一起交給 LLM，
     # description 是 LLM 選路時唯一讀到的判斷依據：
