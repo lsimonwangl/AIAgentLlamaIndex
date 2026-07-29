@@ -1,6 +1,6 @@
 """
 Travel Agent - Agent 建立
-========================
+=========================
 agent.py 負責建立旅遊規劃 Agent 的系統提示詞、聊天模型與外部工具綁定。
 
 相較於 Lab2 使用 LangChain 的 create_agent + ChatOpenAI + InMemorySaver，
@@ -24,8 +24,10 @@ from llama_index.core.agent.workflow import FunctionAgent
 from llama_index.llms.openai_like import OpenAILike
 
 
+# ── 系統提示詞 ───────────────────────────────────────
 def build_system_prompt() -> str:
     """建立系統提示詞，用來告訴 Agent 回答時要遵守哪些規則。"""
+
     return """\
 你是個人化旅遊規劃助理。
 
@@ -110,8 +112,10 @@ def build_system_prompt() -> str:
 像朋友推薦，明確連結「因為你提到 X，所以推薦 Y」，不確定資訊標註「（建議出發前確認）」"""
 
 
+# ── 建立 Agent ───────────────────────────────────────
 def build_agent(tools):
     """建立旅遊 Agent，並把模型、工具和系統提示詞組合起來。"""
+
     # 初始化聊天模型，透過 OpenAI-compatible 端點呼叫 NVIDIA NIM
     llm = OpenAILike(
         api_base="https://integrate.api.nvidia.com/v1",  # NVIDIA NIM 的 OpenAI 相容端點

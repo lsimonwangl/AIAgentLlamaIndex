@@ -1,6 +1,6 @@
 """
 Travel Agent - 終端機輸出
-=======================
+=========================
 chat.py 負責顯示啟動畫面、Router 檢索結果、工具呼叫與 Agent 最終回答，
 並驅動多輪對話迴圈。
 
@@ -21,8 +21,13 @@ from openai import APIError
 from prompt import read_query
 
 
+# ── 單輪查詢流程 ─────────────────────────────────────
 async def run_query(router_engine, agent, ctx, query: str):
     """執行一次使用者問題：先用 Router 檢索偏好，再交給 Agent 回答。
+
+    分成三段：Router 選路檢索出過往台灣經驗 → 把經驗、今天日期與問題組成一段輸入
+    → Agent 邊呼叫工具邊產生回答。中間把選路結果與工具呼叫印出來，是為了讓終端機
+    看得到 Agent 實際查了什麼，而不是只看到最後一段文字。
 
     整輪包在 try/except 裡：NVIDIA 端點限流（429/503）或連線錯誤時
     只放棄這一輪，回到對話迴圈，不讓整個 session 掛掉。
@@ -63,8 +68,10 @@ async def run_query(router_engine, agent, ctx, query: str):
         )
 
         # ── Stage 3: Agent 回答，透過 stream_events 顯示工具呼叫 ──
+        # agent.run() 立刻回傳 handler 而非等答案；ctx 帶入前幾輪對話記憶
         handler = agent.run(agent_input, ctx=ctx)
 
+        # 邊跑邊收事件：ToolCall 是「決定要查什麼」，ToolCallResult 是「查回什麼」
         async for event in handler.stream_events():
             if isinstance(event, ToolCall):
                 print(f"🔧 呼叫工具: {event.tool_name}({event.tool_kwargs})")
@@ -80,10 +87,12 @@ async def run_query(router_engine, agent, ctx, query: str):
         print("   通常是端點限流（429/503），稍等一兩分鐘再重問一次即可。")
 
 
+# ── 對話迴圈 ─────────────────────────────────────────
 async def run_chat(router_engine, agent):
     """啟動多輪對話介面，直到使用者主動結束。"""
 
     # 建立 Context 物件，讓 Agent 在多輪對話間保留記憶
+    # 整場對話共用同一個 ctx，使用者才能只補「三天兩夜」而不用重講目的地
     ctx = Context(agent)
 
     print("""
