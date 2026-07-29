@@ -17,7 +17,7 @@ DocumentSummaryIndex 與 KeywordTableIndex，讓系統能針對不同類型的�
     1. 透過 clients 建立 LLM、Embedding Model、Milvus 連線
     2. 透過 indexes 讀取 ./data 並建立四個索引
     3. 將四個索引包成 QueryEngineTool，寫明各自適合的問題類型
-    4. 透過 RouterQueryEngine + LLMSingleSelector 自動選路
+    4. 透過 RouterQueryEngine + PydanticSingleSelector 自動選路
 
 此模組提供 build_router_query_engine() 函式供 main.py 呼叫。
 """
@@ -31,12 +31,12 @@ from llama_index.core.tools import QueryEngineTool
 
 from . import clients, indexes
 
-# ── 檢索設定常數 ──
-VECTOR_TOP_K = 5
+# ── 檢索設定常數 ─────────────────────────────────────
+VECTOR_TOP_K = 5       # 向量檢索取回相似度最高的 5 個 chunk
 DOC_SUMMARY_TOP_K = 3  # 以文件摘要相似度挑出最相關的 3 趟旅行紀錄
 KEYWORD_TOP_K = 5      # 關鍵字命中後最多取回的 chunk 數
 
-# ── 自訂 QA prompt：把 RAG 從「直接回答問題」改為「整理過往台灣經驗作為素材」 ──
+# ── 自訂 QA prompt：把 RAG 從「直接回答問題」改為「整理過往台灣經驗作為素材」 ────
 # 這樣即使使用者問海外目的地（例：京都有溪谷步道嗎），RAG 不會回「無京都資料」，
 # 而是回傳使用者過往在台灣相關的具體經驗，供後續 Agent + Tavily 規劃使用
 ORGANIZE_QA_TEMPLATE = PromptTemplate(
@@ -59,8 +59,17 @@ ORGANIZE_QA_TEMPLATE = PromptTemplate(
 )
 
 
+# ── 建立四個索引並包成選路工具 ───────────────────────
 def _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, llm, summary_llm):
-    """把四個索引包成 QueryEngineTool；description 是 RouterQueryEngine 選路時唯一的判斷依據。"""
+    """把四個索引包成 QueryEngineTool，並各自設定查詢時要用的 LLM 與檢索參數。
+
+    description 是 RouterQueryEngine 選路時唯一的判斷依據——selector 不會看索引
+    內容，只把使用者問題連同這四段 description 交給 LLM 挑一個，所以每段都要寫清楚
+    「什麼樣的問題該走這條」，以及「和其他三條的差別」。
+
+    四個 query engine 共用 ORGANIZE_QA_TEMPLATE，讓檢索結果統一整理成「過往台灣
+    經驗」而不是直接回答問題，後續才好交給 Agent 當規劃素材使用。
+    """
     summary_tool = QueryEngineTool.from_defaults(
         query_engine=summary_index.as_query_engine(
             # 用便宜模型：tree_summarize 查詢時會掃過全部 chunk，是四條路最吃 token 的
@@ -90,7 +99,7 @@ def _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, 
 
     doc_summary_tool = QueryEngineTool.from_defaults(
         query_engine=doc_summary_index.as_query_engine(
-            llm=llm,                      # 合成用主模型 CHAT_MODEL；SUMMARY_MODEL 只用在建索引的摘要
+            llm=llm,                      # 合成用主模型 CHAT_MODEL；建索引時的每篇摘要才用便宜的 summary_llm
             retriever_mode="embedding",   # 以文件摘要的向量相似度挑文件（非每次 LLM 選文件）
             similarity_top_k=DOC_SUMMARY_TOP_K,
             text_qa_template=ORGANIZE_QA_TEMPLATE,
@@ -121,10 +130,16 @@ def _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, 
     return [summary_tool, vector_tool, doc_summary_tool, keyword_tool]
 
 
+# ── 組裝 RouterQueryEngine ───────────────────────────
 def build_router_query_engine():
-    """建立 RouterQueryEngine，依問題類型自動在 SummaryIndex/VectorStoreIndex/DocumentSummaryIndex/KeywordTableIndex 之間選路。"""
+    """建立 RouterQueryEngine，依問題類型自動在四種索引之間選路。
+
+    先透過 clients 建好模型與 Milvus 連線，再用同一份 documents 與 splitter 建出
+    四個索引，包成 tool 後交給 PydanticSingleSelector：selector 只會挑一條路，
+    由選中的 query engine 檢索，最後用主模型 llm 合成回應。
+    """
     llm = clients.build_llm()
-    summary_llm = clients.build_summary_llm()  # 便宜快速模型，只用於建 DocumentSummaryIndex 的每篇摘要
+    summary_llm = clients.build_summary_llm()  # 便宜快速模型：SummaryIndex 查詢與另兩個索引建索引時都用它
     embed_model = clients.build_embed_model()
     vector_store = clients.build_milvus_vector_store()
     splitter = indexes.build_splitter()
