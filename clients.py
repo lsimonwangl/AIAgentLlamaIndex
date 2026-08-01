@@ -1,18 +1,20 @@
 """
-Router RAG - 模型與連線 Client
-==============================
+Travel Agent - 模型與連線 Client
+================================
 clients.py 集中管理需要對外連線的 client 物件：
-    - LLM（CHAT_MODEL）：主模型，負責 Router 選路與最終回應合成
-    - Summary LLM（SUMMARY_MODEL）：便宜快速模型，接高頻／全量的 LLM 呼叫
+    - LLM（CHAT_MODEL）：主模型，agent.py 的 Agent 與 rag.py 的
+      Router 選路／最終回應合成都用它
+    - Summary LLM（SUMMARY_MODEL）：便宜快速模型，接 rag.py 高頻／全量的 LLM 呼叫
     - Embedding Model：把文字轉成向量，供向量相似度檢索使用
     - Milvus VectorStore：向量資料庫連線，VectorStoreIndex 的向量存放處
 
 集中在此檔案的原因：API 端點、金鑰、URI 這類連線設定是最常需要調整的
-部分，統一放在一起維護；indexes.py 的索引建構邏輯只需要拿到建好
-的 client 物件使用，不需要知道連線細節。
+部分，統一放在一起維護；agent.py 與 rag.py 只需要拿到建好
+的 client 物件使用，不需要知道連線細節。這些連線並非 RAG 專屬，
+agent.py 建 Agent 用的 LLM 也共用同一份，所以獨立成檔而不是併進 rag.py。
 
 此模組提供 build_llm()、build_summary_llm()、build_embed_model() 與
-build_milvus_vector_store() 函式供 router.py 呼叫。
+build_milvus_vector_store() 函式供 agent.py 與 rag.py 呼叫。
 """
 
 import os
@@ -36,8 +38,8 @@ def build_llm(model=None):
     """建立 LLM 實例（透過 OpenAI-compatible 端點呼叫 NVIDIA NIM）。
 
     NVIDIA NIM 提供 OpenAI 相容的 API，所以不需要專用 SDK，用 OpenAILike 指到
-    它的端點就能接。RAG 這側的 LLM 都從這裡產生；注意 agent.py 另外自己建了一份
-    設定相同的 OpenAILike（目前刻意重複），換端點或改參數時兩邊都要改。
+    它的端點就能接。agent.py 的 Agent 與 rag.py 的 LLM 都從這裡產生，
+    換端點或改參數只需要改這一處。
 
     model 不傳時用 .env 的 CHAT_MODEL；傳入時改用指定模型
     （build_summary_llm() 就是傳入 SUMMARY_MODEL 的薄包裝）。
