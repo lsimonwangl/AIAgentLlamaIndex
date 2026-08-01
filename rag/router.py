@@ -91,8 +91,8 @@ def _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, 
             text_qa_template=ORGANIZE_QA_TEMPLATE,
         ),
         description=(
-            "適合回答特定景點資訊、行程細節與實際建議等需要精確比對的具體型問題，"
-            "以語意相似度找出某次旅行的景點體驗、美食評價、住宿細節等對應的文件片段。"
+            "適合回答景點體驗、美食評價、住宿細節、行程安排等針對單一片段的語意型問題，"
+            "以語意相似度檢索，問題與紀錄用詞不同也能命中，重點是意思相近。"
             "例如：日本有沒有類似我在花蓮走過那條沿溪步道的健行路線。"
         ),
     )
@@ -157,7 +157,7 @@ def build_router_query_engine():
     # selector 會把使用者問題連同上面四個工具的 description 一起交給 LLM，
     # description 是 LLM 選路時唯一讀到的判斷依據：
     #   總覽型問題 → summary_tool（SummaryIndex，綜觀全部紀錄做摘要）
-    #   檢索型問題 → vector_tool（VectorStoreIndex，top-k 相似檢索）
+    #   語意型問題 → vector_tool（VectorStoreIndex，top-k 相似檢索）
     #   整趟紀錄回顧 → doc_summary_tool（DocumentSummaryIndex，以摘要挑整篇文件）
     #   精確名稱命中 → keyword_tool（KeywordTableIndex，關鍵字反向表字面命中）
     router_engine = RouterQueryEngine(
