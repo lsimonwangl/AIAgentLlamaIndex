@@ -6,7 +6,11 @@ clients.py 集中管理需要對外連線的 client 物件：
       Router 選路／最終回應合成都用它
     - Summary LLM（SUMMARY_MODEL）：便宜快速模型，接 rag.py 高頻／全量的 LLM 呼叫
     - Embedding Model：把文字轉成向量，供向量相似度檢索使用
-    - Milvus VectorStore：向量資料庫連線，VectorStoreIndex 的向量存放處
+    - Milvus VectorStore：向量資料庫連線；所有需要向量的索引都存這裡，不落地本機，
+      本機 storage/ 只保留 docstore／index_store 這類非向量的結構性資料
+      （VectorStoreIndex 用 MILVUS_COLLECTION 存 chunk 向量，DocumentSummaryIndex
+      用 MILVUS_SUMMARY_COLLECTION 存摘要向量，兩者 collection 不同——已用官方
+      原始碼與實測驗證過 DocumentSummaryIndex 支援外部 vector_store）
 
 集中在此檔案的原因：API 端點、金鑰、URI 這類連線設定是最常需要調整的
 部分，統一放在一起維護；agent.py 與 rag.py 只需要拿到建好
@@ -29,8 +33,9 @@ LLM_CONTEXT_WINDOW = 128000  # 模型單次請求最多能吃的 token 數
 LLM_TIMEOUT = 300.0          # 單次請求逾時秒數；免費端點較慢，放寬避免中途中斷
 
 # ── Milvus 連線設定 ──────────────────────────────────
-MILVUS_URI = "http://localhost:19530"      # 由 docker-compose.yml 起的本機 Milvus
-MILVUS_COLLECTION = "travel_preferences"   # 存旅遊紀錄向量的 collection 名稱
+MILVUS_URI = "http://localhost:19530"                       # 由 docker-compose.yml 起的本機 Milvus
+MILVUS_COLLECTION = "travel_preferences"                    # VectorStoreIndex：chunk 向量
+MILVUS_SUMMARY_COLLECTION = "travel_preferences_summaries"  # DocumentSummaryIndex：每篇摘要的向量
 EMBED_DIM = 4096  # 需與 embedding 模型輸出維度一致（nv-embed-v1 為 4096），不一致會寫入失敗
 
 
@@ -84,18 +89,23 @@ def build_embed_model():
     return NVIDIAEmbedding(model=os.getenv("EMBEDDING_MODEL"))
 
 
-def build_milvus_vector_store():
-    """建立 Milvus VectorStore 連線（供 VectorStoreIndex 存放向量）。
+def build_milvus_vector_store(collection_name: str, overwrite: bool = False):
+    """建立 Milvus VectorStore 連線。
 
-    向量存進外部的 Milvus 而非 LlamaIndex 預設的記憶體，資料才不會隨程式結束消失，
+    collection_name 由呼叫端指定，不設預設值——刻意要求每次呼叫都明確寫出要接哪個
+    collection：VectorStoreIndex 用 MILVUS_COLLECTION（chunk 向量），
+    DocumentSummaryIndex 用 MILVUS_SUMMARY_COLLECTION（摘要向量）。兩者不可共用同一個
+    collection，語意不同（一個是「chunk 像不像」，一個是「摘要像不像」），
+    混在一起查詢會撈到不相關的向量。
+
+    overwrite 預設 False：main.py／retrieval.py 查詢時只需要接上既有 collection，不能
+    覆寫掉離線建好的向量；只有 index.py 離線建索引時才需要傳 overwrite=True 清空重建。
     """
     return MilvusVectorStore(
         # 本機 Milvus 服務位址（docker-compose.yml 起的那一組）
         uri=MILVUS_URI,
-        # 存旅遊紀錄向量的 collection
-        collection_name=MILVUS_COLLECTION,
+        collection_name=collection_name,
         # 向量維度，需與 embedding 模型一致
         dim=EMBED_DIM,
-        # 每次啟動覆寫，確保向量內容與 ./data 同步
-        overwrite=True,
+        overwrite=overwrite,
     )

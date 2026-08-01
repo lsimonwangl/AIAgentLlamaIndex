@@ -10,14 +10,16 @@ Lab3 直接將 RouterQueryEngine 與 Agent 傳入 CLI 迴圈，
 執行流程：
     0. 載入套件與環境變數
     1. 載入 Agent 可以使用的 MCP 外部工具
-    2. 建立 RouterQueryEngine（Summary / Vector / DocumentSummary / KeywordTable 四索引）
+    2. 建立 RouterQueryEngine（讀回 index.py 離線建好的 Summary / Vector /
+       DocumentSummary / KeywordTable 四索引，不在這裡重建）
     3. 建立負責回答問題的旅遊 Agent
     4. 顯示啟動 banner，透過 read_query 從終端機讀取使用者輸入
     5. 每輪呼叫 retrieve_preferences 用 RouterQueryEngine 檢索偏好（顯示選路結果），
        再由 run_agent_turn 交給 FunctionAgent 回答（透過 stream_events 顯示工具呼叫）
     6. 使用者結束輸入時印出告別訊息
 
-執行方式：
+執行方式（./data 語料有異動、或第一次執行時，需先建好索引）：
+    python -m rag.index
     python main.py
 """
 
@@ -32,7 +34,7 @@ from llama_index.core.workflow import Context
 from openai import APIError
 
 from agent import build_agent
-from rag import build_router_query_engine
+from rag.retrieval import build_router_query_engine, retrieve_preferences
 from tools import load_mcp_tools
 
 
@@ -52,39 +54,6 @@ def read_query(turn: int) -> str | None:
 
     # 回傳原始問題；若使用者只按 Enter，會回傳空字串讓呼叫端繼續等待
     return query
-
-
-# ── 檢索過往偏好 ─────────────────────────────────────
-def retrieve_preferences(router_engine, query: str) -> str:
-    """透過 RouterQueryEngine 自動選路，從過往台灣旅遊紀錄檢索出與本題相關的偏好。
-
-    把選路結果印出來，是為了讓終端機看得到 Router 實際選了哪種索引，
-    而不是只看到最後一段摘要文字。
-    """
-    print("🔍 RouterQueryEngine 檢索中...")
-    rag_response = router_engine.query(query)
-
-    # 顯示 Router 選了哪條路
-    # selections 是 0-based，但 LLM 的 reason 文字用 1-based（choice (1)）描述，這裡統一轉成 1-based 並附上工具名稱，避免「選 0 卻說選 1」的混淆
-    # tool_names 順序對應 rag.py 的 _build_tools() 回傳順序（summary/vector/doc_summary/keyword），兩邊要一起改
-    selector_result = (rag_response.metadata or {}).get("selector_result")
-    if selector_result:
-        tool_names = {
-            1: "SummaryIndex（整體偏好）",
-            2: "VectorStoreIndex（特定細節）",
-            3: "DocumentSummaryIndex（整趟紀錄回顧）",
-            4: "KeywordTableIndex（精確名稱命中）",
-        }
-        for sel in selector_result.selections:
-            choice = sel.index + 1
-            print(f"📋 Router 選路結果：choice ({choice}) {tool_names.get(choice, '')}")
-            print(f"   理由：{sel.reason}")
-
-    # 顯示檢索到的偏好摘要
-    rag_text = str(rag_response)
-    print(f"📋 偏好摘要：{rag_text[:200]}...")
-
-    return rag_text
 
 
 # ── Agent 執行一輪對話 ───────────────────────────────
@@ -123,27 +92,6 @@ async def run_agent_turn(agent, ctx, query: str, rag_text: str):
 async def main():
     """依序備好工具、檢索器與 Agent，再啟動終端機多輪對話迴圈。"""
 
-    # 建立 RouterQueryEngine，依問題類型自動在四種索引之間選路
-    # 建索引時 DocumentSummaryIndex、KeywordTableIndex 都要逐一呼叫 LLM，
-    # 一樣可能碰到 NVIDIA 端點限流；但這裡失敗沒有「這輪」可以跳過，
-    # 只能印出訊息後結束程式
-    try:
-        router_engine = build_router_query_engine()
-    except APIError as error:
-        print(f"\n⚠️ NVIDIA API 呼叫失敗，初始化未完成：{error}")
-        print("   通常是端點限流（429/503），稍等一兩分鐘再重新執行程式。")
-        return
-
-    # 載入AI Agent外部工具，例如網路搜尋與天氣查詢
-    tools = await load_mcp_tools()
-
-    # 建立旅遊 Agent，負責整合工具、偏好資料並產生回答
-    agent = build_agent(tools)
-
-    # 建立 Context 物件，讓 Agent 在多輪對話間保留記憶
-    # 整場對話共用同一個 ctx，使用者才能只補「三天兩夜」而不用重講目的地
-    ctx = Context(agent)
-
     print("""
     ==================================================
     🧳 旅遊規劃助理已就緒（支援國內/國外規劃）
@@ -153,7 +101,6 @@ async def main():
     2. 大阪住宿幫我找像台南那間民宿風格的住宿
     ==================================================
     """)
-
     # 持續接收使用者輸入，直到 read_query 回傳 None
     turn = 1
     while True:
@@ -170,9 +117,18 @@ async def main():
         # 整輪包在 try/except 裡：NVIDIA 端點限流（429/503）或連線錯誤時
         # 只放棄這一輪，回到對話迴圈，不讓整個 session 掛掉
         try:
-            rag_text = retrieve_preferences(router_engine, query)
+            # 建立 RouterQueryEngine：讀回 index.py 離線建好的四種索引，只做本機讀檔與
+            router_engine = build_router_query_engine()
+            rag_result = retrieve_preferences(router_engine, query)
             print()
-            await run_agent_turn(agent, ctx, query, rag_text)
+            # 載入AI Agent外部工具，例如網路搜尋與天氣查詢
+            tools = await load_mcp_tools()
+            # 建立旅遊 Agent，負責整合工具、偏好資料並產生回答
+            agent = build_agent(tools)
+            # 建立 Context 物件，讓 Agent 在多輪對話間保留記憶
+            # 整場對話共用同一個 ctx，使用者才能只補「三天兩夜」而不用重講目的地
+            ctx = Context(agent)
+            await run_agent_turn(agent, ctx, query, rag_result)
         except APIError as error:
             print(f"\n⚠️ NVIDIA API 呼叫失敗，這輪回答未完成：{error}")
             print("   通常是端點限流（429/503），稍等一兩分鐘再重問一次即可。")
