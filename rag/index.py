@@ -1,6 +1,6 @@
 """
 Router RAG - 離線建索引
-=========================
+=================================
 index.py 負責讀取 ./data 語料，離線建立 retrieval.py 查詢時要用的四種索引，
 並持久化到 STORAGE_DIR，供 main.py 啟動時直接讀回，不需要每次重跑。
 
@@ -40,6 +40,8 @@ index_store）：
 from dotenv import load_dotenv
 load_dotenv()
 
+import os
+
 from llama_index.core import (
     DocumentSummaryIndex,
     KeywordTableIndex,
@@ -56,7 +58,6 @@ from .retrieval import DOC_SUMMARY_INDEX_ID, KEYWORD_INDEX_ID, STORAGE_DIR, SUMM
 
 # ── 讀取旅遊紀錄 ─────────────────────────────────────
 def load_data_docs():
-    """讀取 ./data 資料夾中的文字檔，轉成 LlamaIndex Document 物件列表。"""
     reader = SimpleDirectoryReader(
         # 語料資料夾：一個 .txt 檔＝一筆旅遊紀錄
         input_dir="./data",
@@ -67,24 +68,15 @@ def load_data_docs():
     return reader.load_data()
 
 
-# ── 文件切分器 ───────────────────────────────────────
-def build_splitter():
-    """建立節點切分器，供四種索引共用同一套切分設定。"""
-    # chunk_size=256：每個 chunk 約 256 token；chunk_overlap=50：相鄰 chunk 重疊 50 token，
-    # 避免語句被切斷後兩邊都讀不懂
-    return SentenceSplitter(chunk_size=256, chunk_overlap=50)
-
-
 # ── 建立四種索引並持久化 ───────────────────────────────
 def build_indexes():
-    """依序建立四種索引：SummaryIndex、DocumentSummaryIndex、KeywordTableIndex
-    共用同一份 docstore／index_store（存在 storage_context 裡），最後一起 persist 到
-    STORAGE_DIR——這三個索引都不把向量落地本機：SummaryIndex、KeywordTableIndex
-    本來就沒有向量；DocumentSummaryIndex 的摘要向量改指到 Milvus
-    （summary_vector_store），做法是另外組一個 doc_summary_storage_context，
-    借用同一份 docstore／index_store，只把 vector_store 換成 Milvus。
-    VectorStoreIndex 則完全獨立，向量直接寫進 Milvus 的 chunk collection。
-    """
+    # 依序建立四種索引：SummaryIndex、DocumentSummaryIndex、KeywordTableIndex
+    # 共用同一份 docstore／index_store（存在 storage_context 裡），最後一起 persist 到
+    # STORAGE_DIR——這三個索引都不把向量落地本機：SummaryIndex、KeywordTableIndex
+    # 本來就沒有向量；DocumentSummaryIndex 的摘要向量改指到 Milvus
+    # （summary_vector_store），做法是另外組一個 doc_summary_storage_context，
+    # 借用同一份 docstore／index_store，只把 vector_store 換成 Milvus。
+    # VectorStoreIndex 則完全獨立，向量直接寫進 Milvus 的 chunk collection
     summary_llm = clients.build_summary_llm()  # 便宜快速模型：DocumentSummaryIndex、KeywordTableIndex 建索引都用它
     embed_model = clients.build_embed_model()
     # overwrite=True：離線建索引時才需要清空舊資料重建，main.py 查詢時不能這樣做
@@ -92,7 +84,9 @@ def build_indexes():
     summary_vector_store = clients.build_milvus_vector_store(
         clients.MILVUS_SUMMARY_COLLECTION, overwrite=True
     )
-    splitter = build_splitter()
+    # chunk_size=256：每個 chunk 約 256 token；chunk_overlap=50：相鄰 chunk 重疊 50 token，
+    # 避免語句被切斷後兩邊都讀不懂；四種索引共用同一套切分設定
+    splitter = SentenceSplitter(chunk_size=256, chunk_overlap=50)
 
     print("🔨 讀取 ./data 旅遊紀錄")
     documents = load_data_docs()
@@ -163,8 +157,12 @@ def build_indexes():
     vector_store.client.flush(clients.MILVUS_COLLECTION)
     summary_vector_store.client.flush(clients.MILVUS_SUMMARY_COLLECTION)
 
+    # 只手動存 docstore、index_store 兩份非向量資料，不呼叫 storage_context.persist()——
+    # 那個方法會連同用不到的空殼一起寫出 graph_store.json（本專案沒用 Knowledge Graph）、
+    # default／image__vector_store.json（本專案沒用圖片索引，且向量一律走 Milvus）
     print(f"💾 持久化非向量資料到 {STORAGE_DIR}（docstore、index_store）...")
-    storage_context.persist(persist_dir=STORAGE_DIR)
+    storage_context.docstore.persist(persist_path=os.path.join(STORAGE_DIR, "docstore.json"))
+    storage_context.index_store.persist(persist_path=os.path.join(STORAGE_DIR, "index_store.json"))
 
     print("✅ 索引建立完成（chunk 向量、摘要向量都已寫入 Milvus，本機只保留結構性資料）")
 

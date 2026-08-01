@@ -1,6 +1,6 @@
 """
 Router RAG - 旅遊偏好檢索器
-===========================
+=================================
 retrieval.py 負責在查詢時把 index.py 離線建好的索引讀回來，組裝成 RouterQueryEngine：
 從 clients 取得模型與兩個 Milvus 連線（chunk 向量、摘要向量），在 _wrap_tools()
 把讀回的四個索引各自包成 QueryEngineTool，交由 RouterQueryEngine 依問題類型自動
@@ -46,7 +46,10 @@ from llama_index.core import (
 )
 from llama_index.core.query_engine import RouterQueryEngine
 from llama_index.core.selectors import PydanticSingleSelector
+from llama_index.core.storage.docstore.simple_docstore import SimpleDocumentStore
+from llama_index.core.storage.index_store.simple_index_store import SimpleIndexStore
 from llama_index.core.tools import QueryEngineTool
+from llama_index.core.vector_stores.simple import SimpleVectorStore
 
 import clients
 
@@ -84,18 +87,14 @@ ORGANIZE_QA_TEMPLATE = PromptTemplate(
 
 # ── 把讀回的四個索引各自包成選路工具 ───────────────────
 def _wrap_tools(summary_index, vector_index, doc_summary_index, keyword_index, llm, summary_llm):
-    """把 index.py 離線建好、這裡讀回的四個索引各自包成 QueryEngineTool。
+    # description 是 RouterQueryEngine 選路時唯一的判斷依據——selector 不會看索引
+    # 內容，只把使用者問題連同這四段 description 交給 LLM 挑一個，所以每段都要寫清楚
+    # 「什麼樣的問題該走這條」，以及「和其他三條的差別」
+    # 四個 query engine 共用 ORGANIZE_QA_TEMPLATE，讓檢索結果統一整理成「過往台灣
+    # 經驗」而不是直接回答問題，後續才好交給 Agent 當規劃素材使用
+    # 回傳順序為 summary/vector/doc_summary/keyword，對應 main.py 顯示選路結果時
+    # 用的 1~4 號名稱（見 main.py 的 tool_names），順序不可任意調動
 
-    description 是 RouterQueryEngine 選路時唯一的判斷依據——selector 不會看索引
-    內容，只把使用者問題連同這四段 description 交給 LLM 挑一個，所以每段都要寫清楚
-    「什麼樣的問題該走這條」，以及「和其他三條的差別」。
-
-    四個 query engine 共用 ORGANIZE_QA_TEMPLATE，讓檢索結果統一整理成「過往台灣
-    經驗」而不是直接回答問題，後續才好交給 Agent 當規劃素材使用。
-
-    回傳順序為 summary/vector/doc_summary/keyword，對應 main.py 顯示選路結果時
-    用的 1~4 號名稱（見 main.py 的 tool_names），順序不可任意調動。
-    """
     # ── SummaryIndex：適合聚合型問題 ──
     # 查詢時 tree_summarize 會掃過全部 chunk 逐層摘要合併，是四條路最吃
     # token 的，所以查詢用便宜的 summary_llm
@@ -167,9 +166,6 @@ def _wrap_tools(summary_index, vector_index, doc_summary_index, keyword_index, l
 
 # ── 組裝 RouterQueryEngine ───────────────────────────
 def build_router_query_engine():
-    """建立 RouterQueryEngine：讀回 index.py 離線建好的四個索引，包成 tool 後
-    交給 PydanticSingleSelector 依問題類型自動選路。
-    """
     if not Path(STORAGE_DIR).exists():
         raise RuntimeError(
             f"找不到索引目錄 {STORAGE_DIR}，請先在專案根目錄執行「python -m rag.index」"
@@ -186,9 +182,16 @@ def build_router_query_engine():
     )
 
     print(f"📂 從 {STORAGE_DIR} 讀取離線建好的索引...")
-    # storage_context 只放本機的非向量資料（docstore／index_store），不傳 vector_store——
-    # 所有向量都在 Milvus，本機的 default__vector_store.json 本來就是空的，讀不讀都無妨
-    storage_context = StorageContext.from_defaults(persist_dir=STORAGE_DIR)
+    # 只從 STORAGE_DIR 讀 docstore、index_store 這兩份非向量資料；vector_store 給一個
+    # 空的 SimpleVectorStore（純記憶體，不落地檔案）——所有向量都在 Milvus，
+    # 這裡只是為了滿足 LlamaIndex 的 BaseIndex.__init__ 一定會存取
+    # storage_context.vector_store 的限制，不需要對應 index.py 那邊寫出任何
+    # default／image__vector_store.json、graph_store.json 這類用不到的空殼檔案
+    storage_context = StorageContext.from_defaults(
+        docstore=SimpleDocumentStore.from_persist_dir(STORAGE_DIR),
+        index_store=SimpleIndexStore.from_persist_dir(STORAGE_DIR),
+        vector_store=SimpleVectorStore(),
+    )
 
     summary_index = load_index_from_storage(storage_context, index_id=SUMMARY_INDEX_ID)
     # KeywordTableIndex.__init__ 會在建構時就 resolve 一個 llm（self._llm = llm or Settings.llm），
@@ -253,11 +256,8 @@ def build_router_query_engine():
 
 # ── 檢索過往偏好 ─────────────────────────────────────
 def retrieve_preferences(router_engine, query: str) -> str:
-    """透過 RouterQueryEngine 自動選路，從過往台灣旅遊紀錄檢索出與本題相關的偏好。
-
-    把選路結果印出來，是為了讓終端機看得到 Router 實際選了哪種索引，
-    而不是只看到最後一段摘要文字。
-    """
+    # 把選路結果印出來，是為了讓終端機看得到 Router 實際選了哪種索引，
+    # 而不是只看到最後一段摘要文字
     print("🔍 RouterQueryEngine 檢索中...")
     rag_response = router_engine.query(query)
 

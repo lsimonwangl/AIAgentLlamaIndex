@@ -1,6 +1,6 @@
 """
 Travel Agent - Tool 載入
-========================
+=================================
 tools.py 負責設定 Agent 可使用的 MCP tools，包含網路搜尋與天氣查詢。
 
 相較於 Lab2 使用 langchain-mcp-adapters 的 MultiServerMCPClient，
@@ -22,19 +22,16 @@ from llama_index.tools.mcp import BasicMCPClient, McpToolSpec
 
 
 async def load_mcp_tools():
-    """連接 MCP 工具服務，並回傳 LlamaIndex Agent 可以直接使用的工具清單。
-
-    MCP 是一個讓 LLM 與外部工具溝通的標準協定。
-    這裡用兩個元件把外部 MCP server 接成 Agent 可用的工具：
-        - BasicMCPClient: 啟動並連接單一 MCP server，負責底層溝通
-            - 第一個參數 command 為啟動服務的執行檔（這裡用 npx 直接執行 npm 套件）
-            - args 為傳給 command 的參數；-y 表示自動同意安裝、@latest 抓最新版
-            - 預設以 stdio（標準輸入輸出）作為 Agent 與 server 的溝通方式
-        - McpToolSpec: 把該 server 暴露的 MCP 工具轉換成 LlamaIndex FunctionTool
-            - to_tool_list_async() 向 server 詢問可用工具，產出 Agent 能直接呼叫的清單
-    """
+    # MCP 是一個讓 LLM 與外部工具溝通的標準協定；這裡用兩個元件把外部 MCP server
+    # 接成 Agent 可用的工具：
+    #   - BasicMCPClient：啟動並連接單一 MCP server，負責底層溝通，預設以 stdio
+    #     （標準輸入輸出）作為 Agent 與 server 的溝通方式
+    #   - McpToolSpec：把該 server 暴露的 MCP 工具轉換成 LlamaIndex FunctionTool，
+    #     to_tool_list_async() 向 server 詢問可用工具，產出 Agent 能直接呼叫的清單
 
     # 建立 Tavily MCP client：提供網路搜尋功能，讓 Agent 能查詢即時資訊
+    # command 為啟動服務的執行檔（這裡用 npx 直接執行 npm 套件）；
+    # args 為傳給 command 的參數，-y 表示自動同意安裝、@latest 抓最新版
     # TAVILY_API_KEY 由 load_dotenv() 載入 os.environ，npx 子程序會繼承，故此處不需另外傳 env
     tavily_client = BasicMCPClient("npx", args=["-y", "tavily-mcp@latest"])
     tavily_spec = McpToolSpec(client=tavily_client)              # 包成 ToolSpec

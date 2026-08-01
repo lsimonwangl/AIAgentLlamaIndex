@@ -1,6 +1,6 @@
 """
 Travel Agent - Agent 建立
-=========================
+=================================
 agent.py 負責建立旅遊規劃 Agent 的系統提示詞、聊天模型與外部工具綁定。
 
 相較於 Lab2 使用 LangChain 的 create_agent + ChatOpenAI + InMemorySaver，
@@ -25,8 +25,6 @@ import clients
 
 # ── 系統提示詞 ───────────────────────────────────────
 def build_system_prompt() -> str:
-    """建立系統提示詞，用來告訴 Agent 回答時要遵守哪些規則。"""
-
     return """\
 你是個人化旅遊規劃助理。
 
@@ -113,8 +111,6 @@ def build_system_prompt() -> str:
 
 # ── 建立 Agent ───────────────────────────────────────
 def build_agent(tools):
-    """建立旅遊 Agent，並把模型、工具和系統提示詞組合起來。"""
-
     # 聊天模型與 rag.py 共用同一份連線設定，見 clients.build_llm()
     llm = clients.build_llm()
 

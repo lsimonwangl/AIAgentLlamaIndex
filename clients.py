@@ -1,6 +1,6 @@
 """
 Travel Agent - 模型與連線 Client
-================================
+=================================
 clients.py 集中管理需要對外連線的 client 物件：
     - LLM（CHAT_MODEL）：主模型，agent.py 的 Agent 與 rag.py 的
       Router 選路／最終回應合成都用它
@@ -39,16 +39,13 @@ MILVUS_SUMMARY_COLLECTION = "travel_preferences_summaries"  # DocumentSummaryInd
 EMBED_DIM = 4096  # 需與 embedding 模型輸出維度一致（nv-embed-v1 為 4096），不一致會寫入失敗
 
 
+# ── 建立 LLM 連線 ────────────────────────────────────
 def build_llm(model=None):
-    """建立 LLM 實例（透過 OpenAI-compatible 端點呼叫 NVIDIA NIM）。
-
-    NVIDIA NIM 提供 OpenAI 相容的 API，所以不需要專用 SDK，用 OpenAILike 指到
-    它的端點就能接。agent.py 的 Agent 與 rag.py 的 LLM 都從這裡產生，
-    換端點或改參數只需要改這一處。
-
-    model 不傳時用 .env 的 CHAT_MODEL；傳入時改用指定模型
-    （build_summary_llm() 就是傳入 SUMMARY_MODEL 的薄包裝）。
-    """
+    # NVIDIA NIM 提供 OpenAI 相容的 API，所以不需要專用 SDK，用 OpenAILike 指到
+    # 它的端點就能接；agent.py 的 Agent 與 rag.py 的 LLM 都從這裡產生，
+    # 換端點或改參數只需要改這一處
+    # model 不傳時用 .env 的 CHAT_MODEL；傳入時改用指定模型
+    # （build_summary_llm() 就是傳入 SUMMARY_MODEL 的薄包裝）
     return OpenAILike(
         # NVIDIA NIM 的 OpenAI 相容端點
         api_base=LLM_API_BASE,
@@ -65,42 +62,33 @@ def build_llm(model=None):
     )
 
 
+# ── 建立便宜快速模型的 LLM 連線 ────────────────────────
 def build_summary_llm():
-    """建立便宜快速模型的 LLM 實例：讀 .env 的 SUMMARY_MODEL。
-
-    三處高頻的 LLM 呼叫都用它，避免用回應時間過長：
-        - SummaryIndex 查詢：tree_summarize 會掃過全部 chunk
-        - DocumentSummaryIndex 建索引：每篇文件各生一段摘要
-        - KeywordTableIndex 建索引：每個 chunk 各抽一次關鍵字
-
-    未設 SUMMARY_MODEL 時會傳入 None，build_llm() 會 fallback 回 CHAT_MODEL。
-    """
+    # 三處高頻的 LLM 呼叫都用它，避免用主模型拖慢回應：
+    #   - SummaryIndex 查詢：tree_summarize 會掃過全部 chunk
+    #   - DocumentSummaryIndex 建索引：每篇文件各生一段摘要
+    #   - KeywordTableIndex 建索引：每個 chunk 各抽一次關鍵字
+    # 未設 SUMMARY_MODEL 時會傳入 None，build_llm() 會 fallback 回 CHAT_MODEL
     return build_llm(os.getenv("SUMMARY_MODEL"))
 
 
+# ── 建立 Embedding Model 連線 ───────────────────────────
 def build_embed_model():
-    """建立 Embedding Model 實例：讀 .env 的 EMBEDDING_MODEL。
-
-    VectorStoreIndex 把 chunk 嵌入成向量、DocumentSummaryIndex 把每篇摘要嵌入成
-    向量，都用這個模型；它不是 chat LLM，呼叫便宜快速，不佔 chat 額度。
-
-    注意：模型的輸出維度必須與 EMBED_DIM 一致，換模型時兩邊要一起改。
-    """
+    # VectorStoreIndex 把 chunk 嵌入成向量、DocumentSummaryIndex 把每篇摘要嵌入成
+    # 向量，都用這個模型；它不是 chat LLM，呼叫便宜快速，不佔 chat 額度
+    # 注意：模型的輸出維度必須與 EMBED_DIM 一致，換模型時兩邊要一起改
     return NVIDIAEmbedding(model=os.getenv("EMBEDDING_MODEL"))
 
 
+# ── 建立 Milvus VectorStore 連線 ────────────────────────
 def build_milvus_vector_store(collection_name: str, overwrite: bool = False):
-    """建立 Milvus VectorStore 連線。
-
-    collection_name 由呼叫端指定，不設預設值——刻意要求每次呼叫都明確寫出要接哪個
-    collection：VectorStoreIndex 用 MILVUS_COLLECTION（chunk 向量），
-    DocumentSummaryIndex 用 MILVUS_SUMMARY_COLLECTION（摘要向量）。兩者不可共用同一個
-    collection，語意不同（一個是「chunk 像不像」，一個是「摘要像不像」），
-    混在一起查詢會撈到不相關的向量。
-
-    overwrite 預設 False：main.py／retrieval.py 查詢時只需要接上既有 collection，不能
-    覆寫掉離線建好的向量；只有 index.py 離線建索引時才需要傳 overwrite=True 清空重建。
-    """
+    # collection_name 由呼叫端指定，不設預設值——刻意要求每次呼叫都明確寫出要接哪個
+    # collection：VectorStoreIndex 用 MILVUS_COLLECTION（chunk 向量），
+    # DocumentSummaryIndex 用 MILVUS_SUMMARY_COLLECTION（摘要向量）；兩者不可共用同一個
+    # collection，語意不同（一個是「chunk 像不像」，一個是「摘要像不像」），
+    # 混在一起查詢會撈到不相關的向量
+    # overwrite 預設 False：main.py／retrieval.py 查詢時只需要接上既有 collection，不能
+    # 覆寫掉離線建好的向量；只有 index.py 離線建索引時才需要傳 overwrite=True 清空重建
     return MilvusVectorStore(
         # 本機 Milvus 服務位址（docker-compose.yml 起的那一組）
         uri=MILVUS_URI,

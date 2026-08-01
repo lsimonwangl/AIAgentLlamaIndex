@@ -1,6 +1,6 @@
 """
 Travel Agent - 主程式入口與終端機互動
-=====================================
+=================================
 main.py 負責把偏好檢索、Agent、外部工具串起來，並驅動終端機多輪對話迴圈。
 
 相較於 Lab2 使用 LCEL 將各元件串成 chain，
@@ -40,7 +40,6 @@ from tools import load_mcp_tools
 
 # ── 讀取使用者輸入 ───────────────────────────────────
 def read_query(turn: int) -> str | None:
-    """從終端機讀取一輪使用者輸入，並回傳給對話迴圈判斷下一步。"""
     try:
         # 顯示目前輪次並讀取使用者輸入，去掉前後空白
         query = input(f"[第 {turn} 輪] 你：").strip()
@@ -58,11 +57,6 @@ def read_query(turn: int) -> str | None:
 
 # ── Agent 執行一輪對話 ───────────────────────────────
 async def run_agent_turn(agent, ctx, query: str, rag_text: str):
-    """讓 Agent 用已檢索到的過往偏好回答一輪問題，邊呼叫工具邊產生回答。
-
-    把過往經驗、今天日期與問題組成一段輸入交給 Agent 執行；中間把工具呼叫印
-    出來，是為了讓終端機看得到 Agent 實際查了什麼，而不是只看到最後一段文字。
-    """
     print("\n⏳ Agent 思考中...\n")
 
     # 組合 Agent 輸入
@@ -76,7 +70,8 @@ async def run_agent_turn(agent, ctx, query: str, rag_text: str):
     # agent.run() 立刻回傳 handler 而非等答案；ctx 帶入前幾輪對話記憶
     handler = agent.run(agent_input, ctx=ctx)
 
-    # 邊跑邊收事件：ToolCall 是「決定要查什麼」，ToolCallResult 是「查回什麼」
+    # 邊跑邊收事件：ToolCall 是「決定要查什麼」，ToolCallResult 是「查回什麼」；
+    # 印出來是為了讓終端機看得到 Agent 實際查了什麼，而不是只看到最後一段文字
     async for event in handler.stream_events():
         if isinstance(event, ToolCall):
             print(f"🔧 呼叫工具: {event.tool_name}({event.tool_kwargs})")
@@ -90,8 +85,6 @@ async def run_agent_turn(agent, ctx, query: str, rag_text: str):
 
 
 async def main():
-    """依序備好工具、檢索器與 Agent，再啟動終端機多輪對話迴圈。"""
-
     print("""
     ==================================================
     🧳 旅遊規劃助理已就緒（支援國內/國外規劃）
@@ -101,6 +94,26 @@ async def main():
     2. 大阪住宿幫我找像台南那間民宿風格的住宿
     ==================================================
     """)
+
+    # router_engine、tools、agent、ctx 只需要建立一次，整場對話共用：
+    # 放進迴圈裡每輪重建的話，Milvus 連線、npx 子行程都會每輪重來一次，既浪費
+    # 又會讓 ctx 沒辦法真正跨輪保留記憶（每輪都是全新的 Context）
+    try:
+        # 載入 AI Agent 外部工具，例如網路搜尋與天氣查詢；此時尚未建立 Milvus 連線，
+        # fork npx 子行程時不會有 gRPC 背景 thread 在跑，避免 fork() 警告
+        tools = await load_mcp_tools()
+        # 建立 RouterQueryEngine：讀回 index.py 離線建好的四種索引，只做本機讀檔與連線
+        router_engine = build_router_query_engine()
+        # 建立旅遊 Agent，負責整合工具、偏好資料並產生回答
+        agent = build_agent(tools)
+        # 建立 Context 物件，讓 Agent 在多輪對話間保留記憶；
+        # 整場對話共用同一個 ctx，使用者才能只補「三天兩夜」而不用重講目的地
+        ctx = Context(agent)
+    except APIError as error:
+        print(f"\n⚠️ 初始化失敗，程式無法啟動：{error}")
+        print("   通常是端點限流（429/503）或連線問題，稍後再試一次。")
+        return
+
     # 持續接收使用者輸入，直到 read_query 回傳 None
     turn = 1
     while True:
@@ -113,21 +126,12 @@ async def main():
             continue
 
         print()
-        # 每輪先做 RAG 檢索、再交給 Agent 執行；ctx 在輪次間保留對話記憶
+        # 每輪先做 RAG 檢索、再交給 Agent 執行
         # 整輪包在 try/except 裡：NVIDIA 端點限流（429/503）或連線錯誤時
         # 只放棄這一輪，回到對話迴圈，不讓整個 session 掛掉
         try:
-            # 建立 RouterQueryEngine：讀回 index.py 離線建好的四種索引，只做本機讀檔與
-            router_engine = build_router_query_engine()
             rag_result = retrieve_preferences(router_engine, query)
             print()
-            # 載入AI Agent外部工具，例如網路搜尋與天氣查詢
-            tools = await load_mcp_tools()
-            # 建立旅遊 Agent，負責整合工具、偏好資料並產生回答
-            agent = build_agent(tools)
-            # 建立 Context 物件，讓 Agent 在多輪對話間保留記憶
-            # 整場對話共用同一個 ctx，使用者才能只補「三天兩夜」而不用重講目的地
-            ctx = Context(agent)
             await run_agent_turn(agent, ctx, query, rag_result)
         except APIError as error:
             print(f"\n⚠️ NVIDIA API 呼叫失敗，這輪回答未完成：{error}")
