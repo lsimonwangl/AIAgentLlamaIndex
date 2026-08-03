@@ -1,6 +1,6 @@
 """
 Travel Agent - 主程式入口與終端機互動
-=================================
+=====================================
 main.py 負責把偏好檢索、Agent、外部工具串起來，並驅動終端機多輪對話迴圈。
 
 相較於 Lab2 使用 LCEL 將各元件串成 chain，
@@ -40,6 +40,7 @@ from tools import load_mcp_tools
 
 # ── 讀取使用者輸入 ───────────────────────────────────
 def read_query(turn: int) -> str | None:
+    """從終端機讀取一輪使用者輸入，回傳 None 代表使用者想結束對話。"""
     try:
         # 顯示目前輪次並讀取使用者輸入，去掉前後空白
         query = input(f"[第 {turn} 輪] 你：").strip()
@@ -57,6 +58,12 @@ def read_query(turn: int) -> str | None:
 
 # ── Agent 執行一輪對話 ───────────────────────────────
 async def run_agent_turn(agent, ctx, query: str, rag_text: str):
+    """把檢索到的過往經驗與本輪問題交給 Agent，邊跑邊顯示它呼叫了哪些工具。
+
+    agent.run() 不會等答案，而是立刻回傳一個 handler，Agent 在背景開始跑。這樣才能
+    透過 stream_events() 邊跑邊收事件、即時印出工具呼叫；直接 await 的話終端機會空白
+    很久，看不出 Agent 在做什麼。最後再 await handler 取出最終回答。
+    """
     print("\n⏳ Agent 思考中...\n")
 
     # 組合 Agent 輸入
@@ -84,7 +91,14 @@ async def run_agent_turn(agent, ctx, query: str, rag_text: str):
     print(f"\n{response}")
 
 
+# ── 主流程與對話迴圈 ─────────────────────────────────
 async def main():
+    """備好工具、檢索器與 Agent，然後進入多輪對話迴圈。
+
+    四個元件都在迴圈外只建立一次：MCP server 常駐、索引從本機與 Milvus 讀回、
+    Agent 綁好工具、Context 承載對話記憶。放進迴圈裡每輪重建的話，不只浪費，
+    ctx 每輪都是全新的，Agent 會完全失憶。
+    """
     print("""
     ==================================================
     🧳 旅遊規劃助理已就緒（支援國內/國外規劃）
@@ -95,14 +109,10 @@ async def main():
     ==================================================
     """)
 
-    # router_engine、tools、agent、ctx 只需要建立一次，整場對話共用：
-    # 放進迴圈裡每輪重建的話，Milvus 連線、npx 子行程都會每輪重來一次，既浪費
-    # 又會讓 ctx 沒辦法真正跨輪保留記憶（每輪都是全新的 Context）
     try:
-        # 載入 AI Agent 外部工具，例如網路搜尋與天氣查詢；此時尚未建立 Milvus 連線，
-        # fork npx 子行程時不會有 gRPC 背景 thread 在跑，避免 fork() 警告
+        # 載入 Agent 的外部工具，例如網路搜尋與天氣查詢
         tools = await load_mcp_tools()
-        # 建立 RouterQueryEngine：讀回 index.py 離線建好的四種索引，只做本機讀檔與連線
+        # 建立 RouterQueryEngine：讀回 index.py 離線建好的四種索引，只做讀檔與連線
         router_engine = build_router_query_engine()
         # 建立旅遊 Agent，負責整合工具、偏好資料並產生回答
         agent = build_agent(tools)

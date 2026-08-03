@@ -1,20 +1,11 @@
 """
 Router RAG - 旅遊偏好檢索器
-=================================
-retrieval.py 負責在查詢時把 index.py 離線建好的索引讀回來，組裝成 RouterQueryEngine：
-從 clients 取得模型與兩個 Milvus 連線（chunk 向量、摘要向量），在 _wrap_tools()
-把讀回的四個索引各自包成 QueryEngineTool，交由 RouterQueryEngine 依問題類型自動
-選擇檢索方式。
+===========================
+retrieval.py 負責在查詢時把 index.py 離線建好的索引讀回來，組裝成 RouterQueryEngine，
+再依問題類型自動選出最適合的檢索方式。
 
-四個索引裡只有 SummaryIndex、KeywordTableIndex 完全不含向量，其餘向量一律存
-Milvus（VectorStoreIndex 的 chunk 向量、DocumentSummaryIndex 的摘要向量各自
-獨立 collection），本機 STORAGE_DIR 只保留 docstore／index_store 這類結構性資料。
-
-索引本身不在這裡建立——建索引屬於一次性、LLM 密集的離線工作（DocumentSummaryIndex、
-KeywordTableIndex 建索引時都要逐一呼叫 LLM），若跟著 main.py 每次啟動一起做，
-會讓每次重啟都重新消耗一次 LLM 額度，也是先前一直碰到 NVIDIA 端點限流的主因。
-因此拆到 index.py 獨立執行（同一個 rag 套件內），執行完會把索引持久化到
-STORAGE_DIR；retrieval.py 只負責在查詢時讀回已建好的索引。
+索引本身不在這裡建立。建索引要逐篇、逐 chunk 呼叫 LLM，成本高但結果可以重複使用，
+所以拆到 index.py 離線執行；retrieval.py 只做讀檔與連線，讓 main.py 每次啟動都很快。
 
 相較於 Lab2 只使用單一 VectorStoreIndex，Lab3 新增 SummaryIndex、
 DocumentSummaryIndex 與 KeywordTableIndex，讓系統能針對不同類型的問題選擇最適合的檢索策略：
@@ -26,13 +17,11 @@ DocumentSummaryIndex 與 KeywordTableIndex，讓系統能針對不同類型的�
 執行流程：
     0. 載入套件
     1. 透過 clients 建立 LLM、Embedding Model、Milvus 連線
-    2. 從 STORAGE_DIR 讀回 index.py 離線建好的四個索引
-    3. 在 _wrap_tools() 把四個索引各自包成 QueryEngineTool 並寫明適合的問題類型
+    2. 從 STORAGE_DIR 與 Milvus 讀回 index.py 離線建好的四個索引
+    3. 在 _build_query_engine_tools() 把四個索引包成 QueryEngineTool，寫明適合的問題類型
     4. 透過 RouterQueryEngine + PydanticSingleSelector 自動選路
 
-此模組提供 build_router_query_engine()、retrieve_preferences() 函式供 main.py 呼叫；
-STORAGE_DIR 與三個 *_INDEX_ID 常數供 index.py 建索引、持久化時使用同一份設定，
-兩邊要一起改。
+此模組提供 build_router_query_engine()、retrieve_preferences() 函式供 main.py 呼叫。
 """
 
 import logging
@@ -53,10 +42,10 @@ from llama_index.core.vector_stores.simple import SimpleVectorStore
 
 import clients
 
-# ── 索引持久化位置與各索引的固定 index_id ─────────────
-# index.py 建索引、persist 時，與這裡 load_index_from_storage() 讀回時都要用同一份，
-# 才能在同一個 storage_context 裡正確取出對應的索引；VectorStoreIndex 的向量資料
-# 存在外部 Milvus，不需要 index_id
+# ── 索引存放位置與各索引的固定 index_id ───────────────
+# 三個索引存在同一份 STORAGE_DIR 裡，要靠 index_id 才分得出誰是誰；
+# index.py 建索引時貼上這些 id，這裡讀回時再用同一組 id 取出對應的索引。
+# VectorStoreIndex 不在此列，它的資料整份都在 Milvus，直接接 collection 即可
 STORAGE_DIR = "./storage"
 SUMMARY_INDEX_ID = "summary_index"
 DOC_SUMMARY_INDEX_ID = "doc_summary_index"
@@ -86,16 +75,17 @@ ORGANIZE_QA_TEMPLATE = PromptTemplate(
 
 
 # ── 把讀回的四個索引各自包成選路工具 ───────────────────
-def _wrap_tools(summary_index, vector_index, doc_summary_index, keyword_index, llm, summary_llm):
-    # description 是 RouterQueryEngine 選路時唯一的判斷依據——selector 不會看索引
-    # 內容，只把使用者問題連同這四段 description 交給 LLM 挑一個，所以每段都要寫清楚
-    # 「什麼樣的問題該走這條」，以及「和其他三條的差別」
-    # 四個 query engine 共用 ORGANIZE_QA_TEMPLATE，讓檢索結果統一整理成「過往台灣
-    # 經驗」而不是直接回答問題，後續才好交給 Agent 當規劃素材使用
-    # 回傳順序為 summary/vector/doc_summary/keyword，對應 main.py 顯示選路結果時
-    # 用的 1~4 號名稱（見 main.py 的 tool_names），順序不可任意調動
+def _build_query_engine_tools(summary_index, vector_index, doc_summary_index, keyword_index, llm, summary_llm):
+    """把四個索引各自包成 QueryEngineTool，並設定查詢時要用的 LLM 與檢索參數。
 
-    # ── SummaryIndex：適合聚合型問題 ──
+    description 是 RouterQueryEngine 選路時唯一的判斷依據——selector 不會看索引內容，
+    只把使用者問題連同這四段 description 交給 LLM 挑一個。所以每段都要寫清楚「什麼樣的
+    問題該走這條」，以及「和其他三條的差別」，寫得含糊就容易選錯。
+
+    四個 query engine 共用 ORGANIZE_QA_TEMPLATE，讓檢索結果統一整理成「過往台灣經驗」
+    而不是直接回答問題，後續才好交給 Agent 當規劃素材使用。
+    """
+    # ── SummaryIndex：適合總覽型問題 ──
     # 查詢時 tree_summarize 會掃過全部 chunk 逐層摘要合併，是四條路最吃
     # token 的，所以查詢用便宜的 summary_llm
     summary_tool = QueryEngineTool.from_defaults(
@@ -111,8 +101,9 @@ def _wrap_tools(summary_index, vector_index, doc_summary_index, keyword_index, l
         ),
     )
 
-    # ── VectorStoreIndex：適合細節型問題 ──
-    # 查詢時把問題也轉成向量，取相似度最高的 top-k 個 chunk——語意（dense）檢索
+    # ── VectorStoreIndex：適合語意型問題 ──
+    # 查詢時把問題也轉成向量，取相似度最高的 top-k 個 chunk——屬於語意（dense）檢索，
+    # 問題和紀錄用詞完全不同也能命中，比的是意思而非字面
     vector_tool = QueryEngineTool.from_defaults(
         query_engine=vector_index.as_query_engine(
             llm=llm,
@@ -161,11 +152,21 @@ def _wrap_tools(summary_index, vector_index, doc_summary_index, keyword_index, l
         ),
     )
 
+    # 順序對應 main.py 顯示選路結果時用的 1~4 號名稱
     return [summary_tool, vector_tool, doc_summary_tool, keyword_tool]
 
 
 # ── 組裝 RouterQueryEngine ───────────────────────────
 def build_router_query_engine():
+    """讀回四個離線建好的索引，組裝成能自動選路的 RouterQueryEngine。
+
+    這個函式只做讀檔與連線，不打任何 LLM——索引早在 index.py 就建好了，
+    所以 main.py 啟動很快，重啟幾次都不會多花額度。
+
+    讀回的來源有兩處：三個索引的原文與結構從本機 STORAGE_DIR 讀，向量的部分
+    直接接上 Milvus 既有的 collection。四個索引包成 tool 後交給 selector，
+    由它挑一條路，最後用主模型把檢索結果合成回應。
+    """
     if not Path(STORAGE_DIR).exists():
         raise RuntimeError(
             f"找不到索引目錄 {STORAGE_DIR}，請先在專案根目錄執行「python -m rag.index」"
@@ -176,54 +177,52 @@ def build_router_query_engine():
     summary_llm = clients.build_summary_llm()  # 便宜快速模型：SummaryIndex 查詢用它
     embed_model = clients.build_embed_model()
     # overwrite=False：這裡只是接上 index.py 已經寫好的向量資料，不能覆寫
-    vector_store = clients.build_milvus_vector_store(clients.MILVUS_COLLECTION, overwrite=False)
-    summary_vector_store = clients.build_milvus_vector_store(
-        clients.MILVUS_SUMMARY_COLLECTION, overwrite=False
+    chunk_vector_store = clients.build_milvus_vector_store(
+        clients.MILVUS_VECTOR_STORE_INDEX_COLLECTION, overwrite=False
+    )
+    document_summary_vector_store = clients.build_milvus_vector_store(
+        clients.MILVUS_DOCUMENT_SUMMARY_INDEX_COLLECTION, overwrite=False
     )
 
     print(f"📂 從 {STORAGE_DIR} 讀取離線建好的索引...")
-    # 只從 STORAGE_DIR 讀 docstore、index_store 這兩份非向量資料；vector_store 給一個
-    # 空的 SimpleVectorStore（純記憶體，不落地檔案）——所有向量都在 Milvus，
-    # 這裡只是為了滿足 LlamaIndex 的 BaseIndex.__init__ 一定會存取
-    # storage_context.vector_store 的限制，不需要對應 index.py 那邊寫出任何
-    # default／image__vector_store.json、graph_store.json 這類用不到的空殼檔案
+    # 從 STORAGE_DIR 讀回原文（docstore）與索引結構（index_store）；vector_store 給一個
+    # 空的記憶體版本，因為所有向量都在 Milvus，本機這份不會被用到
     storage_context = StorageContext.from_defaults(
         docstore=SimpleDocumentStore.from_persist_dir(STORAGE_DIR),
         index_store=SimpleIndexStore.from_persist_dir(STORAGE_DIR),
         vector_store=SimpleVectorStore(),
     )
 
+    # SummaryIndex 不含向量也不需要 LLM，讀回結構就完整了
     summary_index = load_index_from_storage(storage_context, index_id=SUMMARY_INDEX_ID)
-    # KeywordTableIndex.__init__ 會在建構時就 resolve 一個 llm（self._llm = llm or Settings.llm），
-    # 不像 SummaryIndex 可以完全等到 as_query_engine() 才指定；沒傳的話會 fallback 去找
-    # Settings.llm（預設 OpenAI），這個專案沒有設定全域 Settings.llm、也沒有 OPENAI_API_KEY，
-    # 所以載入時就要明確傳入 summary_llm（跟 index.py 建索引時用的模型一致）
+
+    # KeywordTableIndex 查詢時要用 LLM 抽問題的關鍵字，而且它在載入當下就要決定用哪個模型，
+    # 沒傳的話會 fallback 到全域預設（OpenAI），所以這裡要明確傳入與建索引時相同的 summary_llm
     keyword_index = load_index_from_storage(
         storage_context, index_id=KEYWORD_INDEX_ID, llm=summary_llm
     )
 
-    # DocumentSummaryIndex 的摘要向量存在 Milvus 摘要 collection，docstore／index_store
-    # 借用 storage_context 讀回的同一份物件（不是複製），vector_store 換成 summary_vector_store——
-    # 對應 index.py 建索引時同樣的組法，才能讀回一致的結構
-    doc_summary_storage_context = StorageContext.from_defaults(
+    # DocumentSummaryIndex 的摘要向量在另一個 Milvus collection，所以要另外組一份
+    # storage_context：原文與索引結構沿用上面讀回的，只把 vector_store 換成摘要那組。
+    # llm 的情況與 KeywordTableIndex 相同，載入時就要指定
+    document_summary_storage_context = StorageContext.from_defaults(
         docstore=storage_context.docstore,
         index_store=storage_context.index_store,
-        vector_store=summary_vector_store,
+        vector_store=document_summary_vector_store,
     )
-    # DocumentSummaryIndex.__init__ 同樣會在建構時 resolve self._llm = llm or Settings.llm，
-    # 跟 KeywordTableIndex 一樣要明確傳入，這裡對應 index.py 建索引時用的 summary_llm
     doc_summary_index = load_index_from_storage(
-        doc_summary_storage_context,
+        document_summary_storage_context,
         index_id=DOC_SUMMARY_INDEX_ID,
         llm=summary_llm,
         embed_model=embed_model,
     )
 
-    # VectorStoreIndex 的 chunk 向量存在 Milvus（外部），不需要從本機 storage_context 讀回，
-    # 直接接上既有 collection 即可
-    vector_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model)
+    # VectorStoreIndex 整份資料都在 Milvus，不需要從本機讀回任何東西，直接接上 collection
+    vector_index = VectorStoreIndex.from_vector_store(
+        chunk_vector_store, embed_model=embed_model
+    )
 
-    tools = _wrap_tools(
+    tools = _build_query_engine_tools(
         summary_index=summary_index,
         vector_index=vector_index,
         doc_summary_index=doc_summary_index,
@@ -256,14 +255,19 @@ def build_router_query_engine():
 
 # ── 檢索過往偏好 ─────────────────────────────────────
 def retrieve_preferences(router_engine, query: str) -> str:
-    # 把選路結果印出來，是為了讓終端機看得到 Router 實際選了哪種索引，
-    # 而不是只看到最後一段摘要文字
+    """用 RouterQueryEngine 檢索一次，回傳整理好的過往台灣經驗。
+
+    回傳的不是問題的答案，而是「與這個問題相關的過往經驗」——因為四個 query engine
+    都套了 ORGANIZE_QA_TEMPLATE。這段文字接著會交給 Agent 當規劃素材。
+
+    過程中把選路結果印出來，是為了讓終端機看得到 Router 實際選了哪種索引、理由是什麼，
+    而不是只看到最後一段摘要文字。
+    """
     print("🔍 RouterQueryEngine 檢索中...")
     rag_response = router_engine.query(query)
 
-    # 顯示 Router 選了哪條路
-    # selections 是 0-based，但 LLM 的 reason 文字用 1-based（choice (1)）描述，這裡統一轉成 1-based 並附上工具名稱，避免「選 0 卻說選 1」的混淆
-    # tool_names 順序對應本檔案 _wrap_tools() 的回傳順序（summary/vector/doc_summary/keyword），兩者要一起改
+    # 顯示 Router 選了哪條路。selections 是 0-based，但 LLM 寫理由時用 1-based
+    # （choice (1)）描述，這裡統一轉成 1-based 並附上索引名稱，避免「選 0 卻說選 1」的混淆
     selector_result = (rag_response.metadata or {}).get("selector_result")
     if selector_result:
         tool_names = {
