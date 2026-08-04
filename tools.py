@@ -2,9 +2,6 @@
 Travel Agent - Tool 載入
 ========================
 tools.py 負責設定 Agent 可使用的 MCP tools，包含網路搜尋與天氣查詢。
-
-相較於 Lab2 使用 langchain-mcp-adapters 的 MultiServerMCPClient，
-Lab3 改用 llama-index-tools-mcp 的 BasicMCPClient + McpToolSpec，
 透過 MCP 標準協定連接外部工具，回傳 LlamaIndex Agent 可直接使用的工具清單。
 
 執行流程：
@@ -21,8 +18,9 @@ Lab3 改用 llama-index-tools-mcp 的 BasicMCPClient + McpToolSpec，
 from llama_index.tools.mcp import BasicMCPClient, McpToolSpec
 
 
+# ── 載入 MCP 外部工具 ─────────────────────────────────
 async def load_mcp_tools():
-    """連接 MCP 工具服務，並回傳 LlamaIndex Agent 可以直接使用的工具清單。
+    """連接 MCP 工具服務，回傳 LlamaIndex Agent 可以直接使用的工具清單。
 
     MCP 是一個讓 LLM 與外部工具溝通的標準協定。
     這裡用兩個元件把外部 MCP server 接成 Agent 可用的工具：
@@ -33,7 +31,6 @@ async def load_mcp_tools():
         - McpToolSpec: 把該 server 暴露的 MCP 工具轉換成 LlamaIndex FunctionTool
             - to_tool_list_async() 向 server 詢問可用工具，產出 Agent 能直接呼叫的清單
     """
-
     # 建立 Tavily MCP client：提供網路搜尋功能，讓 Agent 能查詢即時資訊
     # TAVILY_API_KEY 由 load_dotenv() 載入 os.environ，npx 子程序會繼承，故此處不需另外傳 env
     tavily_client = BasicMCPClient("npx", args=["-y", "tavily-mcp@latest"])
