@@ -196,10 +196,10 @@ def build_router_query_engine():
     # SummaryIndex 不含向量也不需要 LLM，讀回結構就完整了
     summary_index = load_index_from_storage(storage_context, index_id=SUMMARY_INDEX_ID)
 
-    # KeywordTableIndex 查詢時要用 LLM 抽問題的關鍵字，而且它在載入當下就要決定用哪個模型，
-    # 沒傳的話會 fallback 到全域預設（OpenAI），所以這裡要明確傳入與建索引時相同的 summary_llm
+    # KeywordTableIndex 查詢時要用 LLM 抽問題的關鍵字。
+    # 建索引仍使用便宜的 summary_llm；查詢每輪只抽取一次，改用指令遵循能力較好的主模型，
     keyword_index = load_index_from_storage(
-        storage_context, index_id=KEYWORD_INDEX_ID, llm=summary_llm
+        storage_context, index_id=KEYWORD_INDEX_ID, llm=llm
     )
 
     # DocumentSummaryIndex 的摘要向量在另一個 Milvus collection，所以要另外組一份

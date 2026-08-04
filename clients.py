@@ -3,7 +3,7 @@ Travel Agent - 模型與連線 Client
 ================================
 clients.py 集中管理需要對外連線的 client 物件：
     - LLM（CHAT_MODEL）：主模型，負責 Agent 回答、Router 選路與最終回應合成
-    - Summary LLM（SUMMARY_MODEL）：便宜快速模型，接高頻／全量的 LLM 呼叫
+    - Summary LLM（SUMMARY_MODEL）：便宜快速模型，接高頻 LLM 呼叫
     - Embedding Model：把文字轉成向量，供向量相似度檢索使用
     - Milvus VectorStore：向量資料庫連線，所有向量都存這裡，本機不落地
 

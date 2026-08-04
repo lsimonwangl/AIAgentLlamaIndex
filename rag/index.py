@@ -19,14 +19,14 @@ KeywordTableIndex 要逐 chunk 呼叫 LLM 抽關鍵字，資料越多呼叫次�
 執行流程：
     0. 載入套件與環境變數
     1. 透過 clients 建立 LLM、Embedding Model、兩個 Milvus 連線（chunk／摘要）
-    2. 讀取 ./data 語料，建立四種索引共用的切分器
+    2. 讀取 ./data 資料，建立四種索引共用的切分器
     3. 依序建立 SummaryIndex、VectorStoreIndex、DocumentSummaryIndex、KeywordTableIndex
     4. 把結構性資料存到 STORAGE_DIR，向量的部分寫進 Milvus
 
 執行方式（需在專案根目錄執行，讓 ./data、./storage 相對路徑正確）：
     python -m rag.index
 
-（./data 語料異動後要重跑這支腳本，main.py 才會讀到最新內容）
+（./data 資料更動後要重跑這支腳本，main.py 才會讀到最新內容）
 """
 
 # 載入套件與環境變數
@@ -65,9 +65,6 @@ def load_data_docs():
 # ── 建立四種索引並存起來 ─────────────────────────────
 def build_indexes():
     """用同一批 documents 建立四種索引，把結果存到 Milvus 與 STORAGE_DIR。
-
-    四種索引雖然檢索方式完全不同，卻共用同一批文件與同一套切分設定——這樣同一段
-    旅遊紀錄在四種索引裡的邊界一致，比較起來才有意義。
 
     存放方式分兩類：VectorStoreIndex 的 chunk 向量與 DocumentSummaryIndex 的摘要
     向量各自寫進獨立的 Milvus collection；四種索引的原文與索引結構則集中在同一份
