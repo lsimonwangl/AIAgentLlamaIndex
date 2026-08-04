@@ -5,12 +5,12 @@ agent.py 負責建立旅遊規劃 Agent 的系統提示詞、聊天模型與外�
 
 相較於 Lab2 使用 LangChain 的 create_agent + ChatOpenAI + InMemorySaver，
 Lab3 改用 LlamaIndex 的 FunctionAgent + OpenAI（OpenAI-compatible 端點），
-多輪記憶由 Context 物件維持（在 main.py 中建立）。
+多輪記憶由 Context 物件維持（在 chat.py 中建立）。
 
 執行流程：
-    0. 載入套件
+    0. 載入套件與環境變數
     1. 建立系統提示詞，定義 Agent 角色、工具規則與輸出格式
-    2. 透過 clients.build_llm() 取得聊天模型（指向 NVIDIA NIM）
+    2. 使用 OpenAI-compatible 端點初始化聊天模型（指向 NVIDIA NIM）
     3. 將聊天模型、MCP tools 與 system prompt 組合成 FunctionAgent
     4. 回傳可供 main.py 呼叫的 Agent
 
@@ -18,21 +18,16 @@ Lab3 改用 LlamaIndex 的 FunctionAgent + OpenAI（OpenAI-compatible 端點）�
 """
 
 # 載入套件
-from llama_index.core.agent.workflow import FunctionAgent
+import os
 
-import clients
+from llama_index.core.agent.workflow import FunctionAgent
+from llama_index.llms.openai_like import OpenAILike
 
 
 # ── 系統提示詞 ───────────────────────────────────────
 def build_system_prompt() -> str:
-    """建立系統提示詞，用來告訴 Agent 回答時要遵守哪些規則。
+    """建立系統提示詞，用來告訴 Agent 回答時要遵守哪些規則。"""
 
-    這段字串是 Agent 的行為規格，不是說明文件：回答範圍、什麼時候該查工具、
-    輸出要用什麼格式，全部由這裡的文字決定，改一句就會改變 Agent 的輸出。
-
-    規則會寫得這麼細，是因為模型有幾個固定的壞習慣要壓：問單一主題卻回整份行程、
-    沒查工具就自己編景點、輸出夾雜 markdown 與簡體字。
-    """
     return """\
 你是個人化旅遊規劃助理。
 
@@ -119,19 +114,24 @@ def build_system_prompt() -> str:
 
 # ── 建立 Agent ───────────────────────────────────────
 def build_agent(tools):
-    """建立旅遊 Agent，把聊天模型、外部工具與系統提示詞組合起來。
+    """建立旅遊 Agent，並把模型、工具和系統提示詞組合起來。"""
 
-    FunctionAgent 靠 LLM 的 function calling 能力自主決定要不要呼叫工具、呼叫哪個、
-    帶什麼參數，並在「思考 → 呼叫工具 → 讀結果 → 再思考」的迴圈中反覆執行，直到
-    產生最終回答；工具呼叫出錯時會把錯誤訊息回饋給 LLM 重試，不會中斷整個流程。
-
-    傳入的 tools 由 tools.py 從 MCP server 取得，這裡不關心工具怎麼來的；
-    多輪對話記憶則由 Context 物件維持（在 main.py 中建立）。
-    """
-    # 聊天模型與 RAG 共用同一份連線設定，見 clients.build_llm()
-    llm = clients.build_llm()
+    # 初始化聊天模型，透過 OpenAI-compatible 端點呼叫 NVIDIA NIM
+    llm = OpenAILike(
+        api_base="https://integrate.api.nvidia.com/v1",  # NVIDIA NIM 的 OpenAI 相容端點
+        api_key=os.getenv("NVIDIA_API_KEY"),             # 從環境變數讀取 API 金鑰
+        model=os.getenv("CHAT_MODEL"),                   # 指定使用的 chat 模型名稱
+        is_chat_model=True,                              # 使用 chat completion 介面
+        is_function_calling_model=True,                  # 宣告模型支援 function calling，FunctionAgent 才能呼叫工具
+        context_window=128000,                           # 模型最大可吃的 token 數
+        timeout=300.0,                                   # 單次請求逾時秒數（模型較慢，放寬避免中途中斷）
+    )
 
     # 組合模型、工具與系統提示詞，建立 FunctionAgent
+    # FunctionAgent 透過 LLM 的 function calling 能力自主決定要呼叫哪個工具、帶什麼參數，
+    # 並在「思考 → 呼叫工具 → 讀結果 → 再思考」的迴圈中反覆執行，直到產生最終回答；
+    # 工具呼叫出錯時會自動把錯誤訊息回饋給 LLM 重試，不會中斷整個流程。
+    # 多輪對話記憶由 Context 物件維持（在 chat.py 中建立）
     return FunctionAgent(
         tools=tools,
         llm=llm,
