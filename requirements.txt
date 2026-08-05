@@ -1,17 +1,11 @@
-# 安裝：pip install -r requirements.txt
-# 版本一律用 == 釘死，避免在新環境安裝時拿到不同版本
-
-# ── 直接相依：程式碼裡真的 import 到的 ──
-python-dotenv==1.2.2                    # 讀 .env 的 API 金鑰與模型名稱
-llama-index-core==0.14.21               # 索引、檢索、Agent 的核心
-llama-index-llms-openai==0.6.26         # OpenAI 系列 LLM 支援
-llama-index-llms-openai-like==0.5.3     # 用 OpenAI 相容介面接 NVIDIA NIM
-llama-index-embeddings-nvidia==0.5.1    # NVIDIA embedding model
-llama-index-readers-file==0.6.0         # 讀取 ./data 的文字檔
-llama-index-tools-mcp==0.4.8            # 把 MCP server 接成 Agent 工具
-llama-index-vector-stores-milvus==0.9.6 # 向量存進 Milvus
-openai==2.36.0                          # chat.py 用它的 APIError 攔限流錯誤
-pymilvus==2.5.18                        # Milvus 的 Python client
-
-# ── 間接相依：llama-index-core 只寫 nltk>=3.9.3 沒設上限，需自己釘住 ──
-nltk==3.9.4                             # 3.10.1 會誤擋專案內的 venv，切句子時 ImportError
+python-dotenv==1.2.2
+llama-index-core==0.14.21
+llama-index-llms-openai==0.6.26
+llama-index-llms-openai-like==0.5.3
+llama-index-embeddings-nvidia==0.5.1
+llama-index-readers-file==0.6.0
+llama-index-tools-mcp==0.4.8
+llama-index-vector-stores-milvus==0.9.6
+openai==2.36.0
+pymilvus==2.5.18
+nltk==3.9.4
