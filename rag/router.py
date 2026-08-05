@@ -33,7 +33,7 @@ from . import clients, indexes
 
 # ── 檢索設定常數 ─────────────────────────────────────
 VECTOR_TOP_K = 5       # 向量檢索取回相似度最高的 5 個 chunk
-DOC_SUMMARY_TOP_K = 3  # 以文件摘要相似度挑出最相關的 3 趟旅行紀錄
+DOC_SUMMARY_TOP_K = 3  # 由 LLM 從各篇摘要中挑出最相關的 3 趟旅行紀錄
 KEYWORD_TOP_K = 5      # 關鍵字命中後最多取回的 chunk 數
 
 # ── 自訂 QA prompt：把 RAG 從「直接回答問題」改為「整理過往台灣經驗作為素材」 ────
@@ -99,9 +99,9 @@ def _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, 
 
     doc_summary_tool = QueryEngineTool.from_defaults(
         query_engine=doc_summary_index.as_query_engine(
-            llm=llm,                      # 合成用主模型 CHAT_MODEL；建索引時的每篇摘要才用便宜的 summary_llm
-            retriever_mode="embedding",   # 以文件摘要的向量相似度挑文件（非每次 LLM 選文件）
-            similarity_top_k=DOC_SUMMARY_TOP_K,
+            llm=llm,                # 合成用主模型 CHAT_MODEL；建索引時的每篇摘要才用便宜的 summary_llm
+            retriever_mode="llm",
+            choice_top_k=DOC_SUMMARY_TOP_K,
             text_qa_template=ORGANIZE_QA_TEMPLATE,
         ),
         description=(
