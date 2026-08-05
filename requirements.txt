@@ -1,9 +1,11 @@
-python-dotenv
-llama-index-core
-llama-index-llms-openai
-llama-index-llms-openai-like
-llama-index-embeddings-nvidia
-llama-index-readers-file
-llama-index-tools-mcp
-llama-index-vector-stores-milvus
-pymilvus >= 2.5, <2.6
+python-dotenv==1.2.2
+llama-index-core==0.14.21
+llama-index-llms-openai==0.6.26
+llama-index-llms-openai-like==0.5.3
+llama-index-embeddings-nvidia==0.5.1
+llama-index-readers-file==0.6.0
+llama-index-tools-mcp==0.4.8
+llama-index-vector-stores-milvus==0.9.6
+openai==2.36.0
+pymilvus==2.5.18
+nltk==3.9.4
