@@ -100,7 +100,7 @@ def _build_tools(summary_index, vector_index, doc_summary_index, keyword_index, 
     doc_summary_tool = QueryEngineTool.from_defaults(
         query_engine=doc_summary_index.as_query_engine(
             llm=llm,                # 合成用主模型 CHAT_MODEL；建索引時的每篇摘要才用便宜的 summary_llm
-            retriever_mode="llm",
+            retriever_mode="llm",   # 使用 LLM 比對各篇文件摘要，挑選最相關的文件
             choice_top_k=DOC_SUMMARY_TOP_K,
             text_qa_template=ORGANIZE_QA_TEMPLATE,
         ),
